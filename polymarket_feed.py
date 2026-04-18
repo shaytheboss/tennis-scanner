@@ -48,7 +48,12 @@ def _parse_players_from_question(question: str) -> Optional[tuple[str, str]]:
 
 async def fetch_active_tennis_markets() -> list[Market]:
     url = f"{POLYMARKET_GAMMA_URL}/markets"
-    params = {"active": "true", "closed": "false", "tag_slug": "tennis", "limit": 200}
+    params = {
+        "active": "true",
+        "closed": "false",
+        "limit": 200,
+        "tag_slug": "tennis",
+    }
     markets = []
     try:
         async with aiohttp.ClientSession() as session:
