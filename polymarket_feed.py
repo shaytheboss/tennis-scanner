@@ -124,10 +124,70 @@ async def fetch_active_tennis_markets() -> list[Market]:
     print(f"[polymarket] total {len(markets)} tennis markets")
     return markets
 
-
 async def subscribe_prices(markets: list[Market]):
     """WebSocket price subscription."""
     while True:
         if not markets:
             print("[polymarket ws] no markets, sleeping 60s")
-            awa
+            await asyncio.sleep(60)
+            continue
+
+        try:
+            token_to_market = {}
+            token_to_side = {}
+            for m in markets:
+                token_to_market[m.token_id_p1] = m
+                token_to_market[m.token_id_p2] = m
+                token_to_side[m.token_id_p1] = "p1"
+                token_to_side[m.token_id_p2] = "p2"
+
+            asset_ids = list(token_to_market.keys())
+            print(f"[polymarket ws] connecting, {len(asset_ids)} tokens")
+
+            async with websockets.connect(
+                POLYMARKET_CLOB_WSS,
+                ping_interval=WS_PING_INTERVAL,
+                ping_timeout=30,
+            ) as ws:
+                await ws.send(json.dumps({
+                    "type": "market",
+                    "assets_ids": asset_ids,
+                }))
+
+                async for raw_msg in ws:
+                    try:
+                        msg = json.loads(raw_msg)
+                    except json.JSONDecodeError:
+                        continue
+
+                    events = msg if isinstance(msg, list) else [msg]
+                    for ev in events:
+                        asset_id = ev.get("asset_id")
+                        if not asset_id or asset_id not in token_to_market:
+                            continue
+                        price = None
+                        if "price" in ev:
+                            try:
+                                price = float(ev["price"])
+                            except (ValueError, TypeError):
+                                pass
+                        elif "best_bid" in ev and "best_ask" in ev:
+                            try:
+                                price = (float(ev["best_bid"]) + float(ev["best_ask"])) / 2
+                            except (ValueError, TypeError):
+                                pass
+                        if price is None:
+                            continue
+                        market = token_to_market[asset_id]
+                        if token_to_side[asset_id] == "p1":
+                            market.price_p1 = price
+                        else:
+                            market.price_p2 = price
+                        market.last_updated = time.time()
+
+        except websockets.ConnectionClosed as e:
+            print(f"[polymarket ws] closed: {e}, reconnecting in 5s")
+            await asyncio.sleep(5)
+        except Exception as e:
+            print(f"[polymarket ws error] {e}, reconnecting in 10s")
+            await asyncio.sleep(10)
