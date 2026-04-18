@@ -1,4 +1,5 @@
 """Opportunity detection logic."""
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -7,6 +8,8 @@ from sofascore_feed import MatchState
 from polymarket_feed import Market
 from matcher import sofascore_leader_side_in_market
 from config import THRESHOLDS, STAT_PROBS
+
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 
 
 @dataclass
@@ -39,6 +42,24 @@ def _build_situation_text(situation, g_lead, g_trail, s_lead, s_trail, current_s
 
 
 def check_opportunity(match: MatchState, market: Market) -> Optional[Alert]:
+
+    if DEBUG_MODE:
+        return Alert(
+            timestamp=datetime.now().strftime("%H:%M:%S"),
+            player1=match.player1,
+            player2=match.player2,
+            leader=match.player1,
+            situation_type="debug",
+            situation_text=f"[DEBUG] sets {match.sets_p1}-{match.sets_p2}, games {match.games_p1}-{match.games_p2}",
+            price_leader=market.price_p1,
+            price_trailer=market.price_p2,
+            statistical_prob=1.0,
+            edge=0.0,
+            condition_id=market.condition_id,
+            token_id=market.token_id_p1,
+            tournament=match.tournament,
+        )
+
     if match.sets_p1 > match.sets_p2:
         leader = "p1"
     elif match.sets_p2 > match.sets_p1:
