@@ -62,6 +62,7 @@ async def fetch_active_tennis_markets() -> list[Market]:
                     print(f"[polymarket gamma] status {resp.status}")
                     return []
                 data = await resp.json()
+                print(f"[polymarket gamma] raw response type={type(data)}, len={len(data) if isinstance(data, list) else len(data.get('data', []))}")
 
         items = data if isinstance(data, list) else data.get("data", [])
         for item in items:
