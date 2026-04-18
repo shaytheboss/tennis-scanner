@@ -25,10 +25,8 @@ class Market:
 
 
 def _parse_players(home: str, away: str, question: str) -> Optional[tuple[str, str]]:
-    """Extract player names from homeTeam/awayTeam or question string."""
     if home and away:
         return (home, away)
-
     q = question.strip()
     for sep in [" vs. ", " vs ", " v. ", " v "]:
         if sep in q:
@@ -46,9 +44,7 @@ def _parse_players(home: str, away: str, question: str) -> Optional[tuple[str, s
 async def fetch_active_tennis_markets() -> list[Market]:
     """Query Polymarket sports events API for active tennis markets."""
     markets = []
-
-    # ATP=45, WTA=46, Challenger=? (try common IDs)
-    sport_ids = [45, 46]
+    sport_ids = [45, 46]  # ATP=45, WTA=46
 
     async with aiohttp.ClientSession() as session:
         for sport_id in sport_ids:
@@ -75,3 +71,63 @@ async def fetch_active_tennis_markets() -> list[Market]:
                     print(f"[polymarket] sport_id={sport_id} → {len(items)} events")
 
                     if items:
+                        print(f"[polymarket] sample keys: {list(items[0].keys())[:10]}")
+                        print(f"[polymarket] first item: {json.dumps(items[0])[:400]}")
+
+                    for item in items:
+                        try:
+                            home = item.get("homeTeam", "")
+                            away = item.get("awayTeam", "")
+                            question = item.get("question", item.get("title", ""))
+                            game_id = str(item.get("gameId", item.get("game_id", item.get("id", ""))))
+
+                            players = _parse_players(home, away, question)
+                            if not players:
+                                continue
+
+                            raw_tokens = item.get("clobTokenIds", item.get("clob_token_ids", "[]"))
+                            if isinstance(raw_tokens, str):
+                                token_ids = json.loads(raw_tokens)
+                            else:
+                                token_ids = raw_tokens or []
+
+                            if len(token_ids) < 2:
+                                continue
+
+                            raw_prices = item.get("outcomePrices", "[0.5,0.5]")
+                            if isinstance(raw_prices, str):
+                                prices = json.loads(raw_prices)
+                            else:
+                                prices = raw_prices or [0.5, 0.5]
+
+                            condition_id = item.get("conditionId", item.get("condition_id", ""))
+
+                            markets.append(Market(
+                                condition_id=condition_id,
+                                token_id_p1=str(token_ids[0]),
+                                token_id_p2=str(token_ids[1]),
+                                player1_name=players[0],
+                                player2_name=players[1],
+                                game_id=game_id,
+                                price_p1=float(prices[0]) if prices else 0.5,
+                                price_p2=float(prices[1]) if len(prices) > 1 else 0.5,
+                            ))
+
+                        except Exception as e:
+                            print(f"[polymarket parse] {e}")
+                            continue
+
+            except Exception as e:
+                print(f"[polymarket] error sport_id={sport_id}: {e}")
+                continue
+
+    print(f"[polymarket] total {len(markets)} tennis markets")
+    return markets
+
+
+async def subscribe_prices(markets: list[Market]):
+    """WebSocket price subscription."""
+    while True:
+        if not markets:
+            print("[polymarket ws] no markets, sleeping 60s")
+            awa
