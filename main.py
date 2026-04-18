@@ -4,7 +4,7 @@ import time
 
 import aiohttp
 
-from sofascore_feed import fetch_live_matches
+from sofascore_feed import fetch_live_matches, run_sports_feed
 from polymarket_feed import fetch_active_tennis_markets, subscribe_prices, Market
 from matcher import match_players
 from detector import check_opportunity
@@ -15,50 +15,49 @@ from config import POLL_INTERVAL_SECONDS, MARKET_REFRESH_SECONDS, ALERT_COOLDOWN
 async def scanner_loop(markets: list[Market], alerted: dict[str, float]):
     unmatched_logged = set()
 
-    async with aiohttp.ClientSession() as session:
-        while True:
-            try:
-                live_matches = await fetch_live_matches(session)
+    while True:
+        try:
+            live_matches = await fetch_live_matches()
 
-                if live_matches:
-                    print(f"[scanner] {len(live_matches)} live tennis matches")
+            if live_matches:
+                print(f"[scanner] {len(live_matches)} live tennis matches")
 
-                for match_id, match in live_matches.items():
-                    market = match_players(match, markets)
-                    if not market:
-                        if match_id not in unmatched_logged:
-                            print(f"[unmatched] {match.player1} vs {match.player2}")
-                            unmatched_logged.add(match_id)
-                        continue
+            for match_id, match in live_matches.items():
+                market = match_players(match, markets)
+                if not market:
+                    if match_id not in unmatched_logged:
+                        print(f"[unmatched] {match.player1} vs {match.player2}")
+                        unmatched_logged.add(match_id)
+                    continue
 
-                    alert = check_opportunity(match, market)
-                    if not alert:
-                        continue
+                alert = check_opportunity(match, market)
+                if not alert:
+                    continue
 
-                    alert_key = f"{match_id}_{alert.situation_type}"
-                    now = time.time()
-                    if now - alerted.get(alert_key, 0) < ALERT_COOLDOWN_SECONDS:
-                        continue
-
-                    success = await send_alert(alert)
-                    if success:
-                        alerted[alert_key] = now
-                        print(f"[{alert.timestamp}] ✅ {alert.leader} {alert.situation_text} | edge={alert.edge*100:.1f}%")
-                    else:
-                        print(f"[{alert.timestamp}] ❌ telegram send failed")
-
+                alert_key = f"{match_id}_{alert.situation_type}"
                 now = time.time()
-                for key in list(alerted.keys()):
-                    if now - alerted[key] > ALERT_COOLDOWN_SECONDS:
-                        del alerted[key]
+                if now - alerted.get(alert_key, 0) < ALERT_COOLDOWN_SECONDS:
+                    continue
 
-                if len(unmatched_logged) > 500:
-                    unmatched_logged.clear()
+                success = await send_alert(alert)
+                if success:
+                    alerted[alert_key] = now
+                    print(f"[{alert.timestamp}] ✅ {alert.leader} {alert.situation_text} | edge={alert.edge*100:.1f}%")
+                else:
+                    print(f"[{alert.timestamp}] ❌ telegram send failed")
 
-            except Exception as e:
-                print(f"[scanner_loop error] {e}")
+            now = time.time()
+            for key in list(alerted.keys()):
+                if now - alerted[key] > ALERT_COOLDOWN_SECONDS:
+                    del alerted[key]
 
-            await asyncio.sleep(POLL_INTERVAL_SECONDS)
+            if len(unmatched_logged) > 500:
+                unmatched_logged.clear()
+
+        except Exception as e:
+            print(f"[scanner_loop error] {e}")
+
+        await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
 async def market_refresh_loop(markets: list[Market]):
@@ -73,7 +72,7 @@ async def market_refresh_loop(markets: list[Market]):
                         fm.price_p1, fm.price_p2 = existing_prices[fm.condition_id]
                 markets.clear()
                 markets.extend(fresh)
-                print(f"[refresh] {len(markets)} markets refreshed")
+                print(f"[refresh] {len(markets)} markets")
         except Exception as e:
             print(f"[refresh error] {e}")
 
@@ -90,7 +89,8 @@ async def main():
 
     try:
         await asyncio.gather(
-            subscribe_prices(markets),
+            run_sports_feed(),          # ← WebSocket ניקוד מפולימרקט
+            subscribe_prices(markets),  # ← WebSocket מחירים
             scanner_loop(markets, alerted),
             market_refresh_loop(markets),
         )
