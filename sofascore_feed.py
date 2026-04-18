@@ -36,16 +36,14 @@ def _parse_format(league: str, tournament: str) -> str:
 
 def _parse_score(score_str: str, period: str) -> tuple[int, int, int, int, int]:
     """
-    Parse score string like "6-2, 3-1" into sets and games.
+    Parse score like "6-2, 3-1" into sets and games.
     Returns: sets_p1, sets_p2, games_p1, games_p2, current_set
     """
     if not score_str:
         return 0, 0, 0, 0, 1
 
     try:
-        # Split by comma to get individual sets
         set_scores = [s.strip() for s in score_str.split(",")]
-
         sets_p1 = 0
         sets_p2 = 0
         games_p1 = 0
@@ -57,9 +55,8 @@ def _parse_score(score_str: str, period: str) -> tuple[int, int, int, int, int]:
                 continue
             parts = set_score.split("-")
             s1 = int(parts[0].strip())
-            s2 = int(parts[1].strip().split("(")[0])  # remove tiebreak e.g. "7(5)"
+            s2 = int(parts[1].strip().split("(")[0])
 
-            # Check if this set is complete
             is_complete = (
                 (max(s1, s2) >= 6 and abs(s1 - s2) >= 2) or
                 (max(s1, s2) == 7)
@@ -70,9 +67,8 @@ def _parse_score(score_str: str, period: str) -> tuple[int, int, int, int, int]:
                     sets_p1 += 1
                 else:
                     sets_p2 += 1
-                current_set = i + 2  # next set
+                current_set = i + 2
             else:
-                # Current in-progress set
                 games_p1 = s1
                 games_p2 = s2
                 current_set = i + 1
@@ -85,7 +81,6 @@ def _parse_score(score_str: str, period: str) -> tuple[int, int, int, int, int]:
 
 
 def _parse_message(msg: dict) -> Optional[MatchState]:
-    """Parse a Polymarket sports WebSocket message into MatchState."""
     try:
         league = msg.get("leagueAbbreviation", "").lower()
         if league not in TENNIS_LEAGUES:
@@ -109,7 +104,6 @@ def _parse_message(msg: dict) -> Optional[MatchState]:
 
         sets_p1, sets_p2, games_p1, games_p2, current_set = _parse_score(score_str, period)
 
-        # Extract set number from period like "S2" -> 2
         try:
             if period.startswith("S"):
                 current_set = int(period[1:])
@@ -137,20 +131,15 @@ def _parse_message(msg: dict) -> Optional[MatchState]:
         return None
 
 
-# Shared state — updated by the WebSocket listener
 _live_matches: dict[str, MatchState] = {}
 
 
 async def fetch_live_matches(session=None) -> dict[str, MatchState]:
-    """Return current snapshot of live tennis matches."""
     return dict(_live_matches)
 
 
 async def run_sports_feed():
-    """
-    Connect to Polymarket sports WebSocket and keep _live_matches updated.
-    Run this as a background task.
-    """
+    """Connect to Polymarket sports WebSocket and keep _live_matches updated."""
     global _live_matches
 
     while True:
@@ -158,11 +147,10 @@ async def run_sports_feed():
             print(f"[sports ws] connecting to {POLYMARKET_SPORTS_WSS}")
             async with websockets.connect(
                 POLYMARKET_SPORTS_WSS,
-                ping_interval=None,  # server sends pings
+                ping_interval=None,
             ) as ws:
                 print("[sports ws] connected")
                 async for raw in ws:
-                    # Handle ping
                     if raw == "ping":
                         await ws.send("pong")
                         continue
@@ -175,8 +163,8 @@ async def run_sports_feed():
                     match = _parse_message(msg)
                     if match:
                         _live_matches[match.match_id] = match
+                        print(f"[sports ws] {match.player1} vs {match.player2} | {match.sets_p1}-{match.sets_p2} sets | {match.games_p1}-{match.games_p2} games")
                     else:
-                        # Remove ended matches
                         game_id = str(msg.get("gameId", ""))
                         if game_id and msg.get("ended", False):
                             _live_matches.pop(game_id, None)
