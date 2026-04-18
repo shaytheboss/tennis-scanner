@@ -17,8 +17,6 @@ ESPN_HEADERS = {
     "Accept": "application/json",
 }
 
-TENNIS_LEAGUES = {"atp", "wta", "challenger", "itf", "tennis"}
-
 
 @dataclass
 class MatchState:
@@ -41,10 +39,8 @@ def _parse_format(tournament: str) -> str:
 
 
 def _parse_espn_event(event: dict) -> Optional[MatchState]:
-    """Parse one ESPN scoreboard event into MatchState."""
     try:
         status_type = event.get("status", {}).get("type", {})
-        # Only in-progress matches
         if status_type.get("name") not in ("STATUS_IN_PROGRESS",):
             return None
 
@@ -57,7 +53,6 @@ def _parse_espn_event(event: dict) -> Optional[MatchState]:
         if len(competitors) < 2:
             return None
 
-        # ESPN orders: home=0, away=1
         home = competitors[0]
         away = competitors[1]
 
@@ -70,7 +65,6 @@ def _parse_espn_event(event: dict) -> Optional[MatchState]:
         match_id = str(event.get("id", ""))
         tournament = event.get("name", "")
 
-        # Parse linescores (sets)
         home_lines = home.get("linescores", [])
         away_lines = away.get("linescores", [])
 
@@ -121,6 +115,7 @@ def _parse_espn_event(event: dict) -> Optional[MatchState]:
 
 
 _live_matches: dict[str, MatchState] = {}
+_last_live_count = -1
 
 
 async def fetch_live_matches(session=None) -> dict[str, MatchState]:
@@ -128,8 +123,7 @@ async def fetch_live_matches(session=None) -> dict[str, MatchState]:
 
 
 async def run_sports_feed():
-    """Poll ESPN every 5 seconds and keep _live_matches updated."""
-    global _live_matches
+    global _live_matches, _last_live_count
 
     print("[espn] starting feed")
 
@@ -151,19 +145,26 @@ async def run_sports_feed():
 
                             data = await resp.json()
                             events = data.get("events", [])
-                            print(f"[espn] {url.split('/')[-2]} → {len(events)} events")
 
                             for event in events:
                                 match = _parse_espn_event(event)
                                 if match:
                                     new_matches[match.match_id] = match
-                                    print(f"[espn] ✅ {match.player1} vs {match.player2} | sets {match.sets_p1}-{match.sets_p2} | games {match.games_p1}-{match.games_p2}")
 
                     except Exception as e:
                         print(f"[espn error] {url}: {e}")
                         continue
 
                 _live_matches = new_matches
+
+                # הדפס רק כשמספר המשחקים משתנה
+                if len(new_matches) != _last_live_count:
+                    _last_live_count = len(new_matches)
+                    if new_matches:
+                        names = ", ".join(f"{m.player1} vs {m.player2}" for m in new_matches.values())
+                        print(f"[espn] {len(new_matches)} live: {names}")
+                    else:
+                        print("[espn] no live matches")
 
             except Exception as e:
                 print(f"[espn feed error] {e}")
