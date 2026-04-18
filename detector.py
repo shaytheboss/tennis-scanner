@@ -6,7 +6,6 @@ from typing import Optional
 
 from sofascore_feed import MatchState
 from polymarket_feed import Market
-from matcher import sofascore_leader_side_in_market
 from config import THRESHOLDS, STAT_PROBS
 
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
@@ -39,6 +38,36 @@ def _build_situation_text(situation, g_lead, g_trail, s_lead, s_trail, current_s
     if situation == "lead_2_0_and_3_0":
         return f"leads {s_lead}-{s_trail} in sets + {g_lead}-{g_trail} in set {current_set}"
     return situation
+
+
+def _leader_side_in_market(match: MatchState, market: Market, leader: str) -> str:
+    """
+    Determine if the ESPN leader corresponds to p1 or p2 in the Polymarket market.
+    leader is "p1" or "p2" from ESPN's perspective.
+    """
+    from difflib import SequenceMatcher
+
+    if leader == "p1":
+        espn_leader_name = match.player1
+    else:
+        espn_leader_name = match.player2
+
+    espn_last = espn_leader_name.strip().split()[-1].lower()
+
+    p1_clean = market.player1_name
+    if ":" in p1_clean:
+        p1_clean = p1_clean.split(":", 1)[1].strip()
+    p1_last = p1_clean.strip().split()[-1].lower() if p1_clean.strip() else ""
+
+    p2_clean = market.player2_name
+    if ":" in p2_clean:
+        p2_clean = p2_clean.split(":", 1)[1].strip()
+    p2_last = p2_clean.strip().split()[-1].lower() if p2_clean.strip() else ""
+
+    score_p1 = SequenceMatcher(None, espn_last, p1_last).ratio()
+    score_p2 = SequenceMatcher(None, espn_last, p2_last).ratio()
+
+    return "p1" if score_p1 >= score_p2 else "p2"
 
 
 def check_opportunity(match: MatchState, market: Market) -> Optional[Alert]:
@@ -94,7 +123,7 @@ def check_opportunity(match: MatchState, market: Market) -> Optional[Alert]:
     if not situation:
         return None
 
-    poly_side = sofascore_leader_side_in_market(match, market, leader)
+    poly_side = _leader_side_in_market(match, market, leader)
     if poly_side == "p1":
         price_leader = market.price_p1
         price_trailer = market.price_p2
