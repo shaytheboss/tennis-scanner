@@ -42,50 +42,51 @@ def _parse_players(home: str, away: str, question: str) -> Optional[tuple[str, s
 
 
 async def fetch_active_tennis_markets() -> list[Market]:
-    """Query Polymarket sports events API for active tennis markets."""
+    """Query Polymarket events API for active tennis markets."""
     markets = []
-    sport_ids = [45, 46]  # ATP=45, WTA=46
+
+    url = f"{POLYMARKET_GAMMA_URL}/events"
+    params = {
+        "tag_id": 864,
+        "active": "true",
+        "closed": "false",
+        "limit": 100,
+    }
 
     async with aiohttp.ClientSession() as session:
-        for sport_id in sport_ids:
-            url = f"{POLYMARKET_GAMMA_URL}/sports/events?id={sport_id}"
-            try:
-                async with session.get(
-                    url,
-                    timeout=aiohttp.ClientTimeout(total=15),
-                    headers={"Accept": "application/json"},
-                ) as resp:
-                    print(f"[polymarket] {url} → {resp.status}")
-                    if resp.status != 200:
-                        continue
+        try:
+            async with session.get(
+                url,
+                params=params,
+                timeout=aiohttp.ClientTimeout(total=15),
+                headers={"Accept": "application/json"},
+            ) as resp:
+                print(f"[polymarket] {url} → {resp.status}")
+                if resp.status != 200:
+                    print(f"[polymarket] error: {await resp.text()[:200]}")
+                    return []
 
-                    data = await resp.json()
+                data = await resp.json()
+                items = data if isinstance(data, list) else data.get("data", [])
+                print(f"[polymarket] {len(items)} events found")
 
-                    if isinstance(data, list):
-                        items = data
-                    elif isinstance(data, dict):
-                        items = data.get("data", data.get("events", []))
-                    else:
-                        continue
+                if items:
+                    print(f"[polymarket] sample: {json.dumps(items[0])[:400]}")
 
-                    print(f"[polymarket] sport_id={sport_id} → {len(items)} events")
-
-                    if items:
-                        print(f"[polymarket] sample keys: {list(items[0].keys())[:10]}")
-                        print(f"[polymarket] first item: {json.dumps(items[0])[:400]}")
-
-                    for item in items:
-                        try:
+                for event in items:
+                    try:
+                        event_markets = event.get("markets", [])
+                        for item in event_markets:
                             home = item.get("homeTeam", "")
                             away = item.get("awayTeam", "")
-                            question = item.get("question", item.get("title", ""))
-                            game_id = str(item.get("gameId", item.get("game_id", item.get("id", ""))))
+                            question = item.get("question", "")
+                            game_id = str(item.get("gameId", event.get("id", "")))
 
                             players = _parse_players(home, away, question)
                             if not players:
                                 continue
 
-                            raw_tokens = item.get("clobTokenIds", item.get("clob_token_ids", "[]"))
+                            raw_tokens = item.get("clobTokenIds", "[]")
                             if isinstance(raw_tokens, str):
                                 token_ids = json.loads(raw_tokens)
                             else:
@@ -100,10 +101,8 @@ async def fetch_active_tennis_markets() -> list[Market]:
                             else:
                                 prices = raw_prices or [0.5, 0.5]
 
-                            condition_id = item.get("conditionId", item.get("condition_id", ""))
-
                             markets.append(Market(
-                                condition_id=condition_id,
+                                condition_id=item.get("conditionId", ""),
                                 token_id_p1=str(token_ids[0]),
                                 token_id_p2=str(token_ids[1]),
                                 player1_name=players[0],
@@ -113,16 +112,16 @@ async def fetch_active_tennis_markets() -> list[Market]:
                                 price_p2=float(prices[1]) if len(prices) > 1 else 0.5,
                             ))
 
-                        except Exception as e:
-                            print(f"[polymarket parse] {e}")
-                            continue
+                    except Exception as e:
+                        print(f"[polymarket parse] {e}")
+                        continue
 
-            except Exception as e:
-                print(f"[polymarket] error sport_id={sport_id}: {e}")
-                continue
+        except Exception as e:
+            print(f"[polymarket] error: {e}")
 
     print(f"[polymarket] total {len(markets)} tennis markets")
     return markets
+
 
 async def subscribe_prices(markets: list[Market]):
     """WebSocket price subscription."""
