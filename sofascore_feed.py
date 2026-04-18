@@ -1,13 +1,21 @@
-"""Live tennis feed via Polymarket sports WebSocket."""
+"""Live tennis feed via ESPN API - polling every 5s."""
 import asyncio
 import json
 import time
 from dataclasses import dataclass
 from typing import Optional
 
-import websockets
+import aiohttp
 
-POLYMARKET_SPORTS_WSS = "wss://ws-live-data.polymarket.com"
+ESPN_URLS = [
+    "http://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard",
+    "http://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard",
+]
+
+ESPN_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+    "Accept": "application/json",
+}
 
 TENNIS_LEAGUES = {"atp", "wta", "challenger", "itf", "tennis"}
 
@@ -27,39 +35,58 @@ class MatchState:
     timestamp: float
 
 
-def _parse_format(league: str, tournament: str) -> str:
+def _parse_format(tournament: str) -> str:
     grand_slams = ["australian open", "roland garros", "french open", "wimbledon", "us open"]
-    is_grand_slam = any(gs in tournament.lower() for gs in grand_slams)
-    is_men = league.lower() in {"atp", "challenger"}
-    return "bo5" if (is_grand_slam and is_men) else "bo3"
+    return "bo5" if any(gs in tournament.lower() for gs in grand_slams) else "bo3"
 
 
-def _parse_score(score_str: str, period: str) -> tuple[int, int, int, int, int]:
-    """
-    Parse score like "6-2, 3-1" into sets and games.
-    Returns: sets_p1, sets_p2, games_p1, games_p2, current_set
-    """
-    if not score_str:
-        return 0, 0, 0, 0, 1
-
+def _parse_espn_event(event: dict) -> Optional[MatchState]:
+    """Parse one ESPN scoreboard event into MatchState."""
     try:
-        set_scores = [s.strip() for s in score_str.split(",")]
+        status_type = event.get("status", {}).get("type", {})
+        # Only in-progress matches
+        if status_type.get("name") not in ("STATUS_IN_PROGRESS",):
+            return None
+
+        competitions = event.get("competitions", [])
+        if not competitions:
+            return None
+
+        comp = competitions[0]
+        competitors = comp.get("competitors", [])
+        if len(competitors) < 2:
+            return None
+
+        # ESPN orders: home=0, away=1
+        home = competitors[0]
+        away = competitors[1]
+
+        player1 = home.get("athlete", {}).get("displayName", "")
+        player2 = away.get("athlete", {}).get("displayName", "")
+
+        if not player1 or not player2:
+            return None
+
+        match_id = str(event.get("id", ""))
+        tournament = event.get("name", "")
+
+        # Parse linescores (sets)
+        home_lines = home.get("linescores", [])
+        away_lines = away.get("linescores", [])
+
         sets_p1 = 0
         sets_p2 = 0
         games_p1 = 0
         games_p2 = 0
         current_set = 1
 
-        for i, set_score in enumerate(set_scores):
-            if "-" not in set_score:
-                continue
-            parts = set_score.split("-")
-            s1 = int(parts[0].strip())
-            s2 = int(parts[1].strip().split("(")[0])
+        for i, (h, a) in enumerate(zip(home_lines, away_lines)):
+            s1 = int(h.get("value", 0) or 0)
+            s2 = int(a.get("value", 0) or 0)
 
             is_complete = (
                 (max(s1, s2) >= 6 and abs(s1 - s2) >= 2) or
-                (max(s1, s2) == 7)
+                max(s1, s2) == 7
             )
 
             if is_complete:
@@ -74,46 +101,8 @@ def _parse_score(score_str: str, period: str) -> tuple[int, int, int, int, int]:
                 current_set = i + 1
                 break
 
-        return sets_p1, sets_p2, games_p1, games_p2, current_set
-
-    except (ValueError, IndexError):
-        return 0, 0, 0, 0, 1
-
-
-def _parse_message(msg: dict) -> Optional[MatchState]:
-    try:
-        league = msg.get("leagueAbbreviation", "").lower()
-        if league not in TENNIS_LEAGUES:
-            return None
-
-        status = msg.get("status", "").lower()
-        if status != "inprogress":
-            return None
-
-        if msg.get("ended", False):
-            return None
-
-        game_id = str(msg.get("gameId", ""))
-        player1 = msg.get("homeTeam", "")
-        player2 = msg.get("awayTeam", "")
-        score_str = msg.get("score", "")
-        period = msg.get("period", "S1")
-
-        if not player1 or not player2:
-            return None
-
-        sets_p1, sets_p2, games_p1, games_p2, current_set = _parse_score(score_str, period)
-
-        try:
-            if period.startswith("S"):
-                current_set = int(period[1:])
-        except (ValueError, IndexError):
-            pass
-
-        tournament = league.upper()
-
         return MatchState(
-            match_id=game_id,
+            match_id=match_id,
             player1=player1,
             player2=player2,
             sets_p1=sets_p1,
@@ -121,13 +110,13 @@ def _parse_message(msg: dict) -> Optional[MatchState]:
             games_p1=games_p1,
             games_p2=games_p2,
             current_set=current_set,
-            format=_parse_format(league, tournament),
+            format=_parse_format(tournament),
             tournament=tournament,
             timestamp=time.time(),
         )
 
     except Exception as e:
-        print(f"[sports ws parse error] {e}")
+        print(f"[espn parse error] {e}")
         return None
 
 
@@ -139,39 +128,44 @@ async def fetch_live_matches(session=None) -> dict[str, MatchState]:
 
 
 async def run_sports_feed():
-    """Connect to Polymarket sports WebSocket and keep _live_matches updated."""
+    """Poll ESPN every 5 seconds and keep _live_matches updated."""
     global _live_matches
 
-    while True:
-        try:
-            print(f"[sports ws] connecting to {POLYMARKET_SPORTS_WSS}")
-            async with websockets.connect(
-                POLYMARKET_SPORTS_WSS,
-                ping_interval=None,
-            ) as ws:
-                print("[sports ws] connected")
-                async for raw in ws:
-                    if raw == "ping":
-                        await ws.send("pong")
-                        continue
+    print("[espn] starting feed")
 
+    async with aiohttp.ClientSession() as session:
+        while True:
+            try:
+                new_matches = {}
+
+                for url in ESPN_URLS:
                     try:
-                        msg = json.loads(raw)
-                    except json.JSONDecodeError:
+                        async with session.get(
+                            url,
+                            headers=ESPN_HEADERS,
+                            timeout=aiohttp.ClientTimeout(total=10),
+                        ) as resp:
+                            if resp.status != 200:
+                                print(f"[espn] {url} → {resp.status}")
+                                continue
+
+                            data = await resp.json()
+                            events = data.get("events", [])
+                            print(f"[espn] {url.split('/')[-2]} → {len(events)} events")
+
+                            for event in events:
+                                match = _parse_espn_event(event)
+                                if match:
+                                    new_matches[match.match_id] = match
+                                    print(f"[espn] ✅ {match.player1} vs {match.player2} | sets {match.sets_p1}-{match.sets_p2} | games {match.games_p1}-{match.games_p2}")
+
+                    except Exception as e:
+                        print(f"[espn error] {url}: {e}")
                         continue
 
-                    match = _parse_message(msg)
-                    if match:
-                        _live_matches[match.match_id] = match
-                        print(f"[sports ws] {match.player1} vs {match.player2} | {match.sets_p1}-{match.sets_p2} sets | {match.games_p1}-{match.games_p2} games")
-                    else:
-                        game_id = str(msg.get("gameId", ""))
-                        if game_id and msg.get("ended", False):
-                            _live_matches.pop(game_id, None)
+                _live_matches = new_matches
 
-        except websockets.ConnectionClosed as e:
-            print(f"[sports ws] closed: {e}, reconnecting in 5s")
+            except Exception as e:
+                print(f"[espn feed error] {e}")
+
             await asyncio.sleep(5)
-        except Exception as e:
-            print(f"[sports ws error] {e}, reconnecting in 10s")
-            await asyncio.sleep(10)
