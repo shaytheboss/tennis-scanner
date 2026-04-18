@@ -1,11 +1,15 @@
-"""Live tennis feed via Flashscore (unofficial) - polling every 2s."""
+"""Live tennis feed via Polymarket sports WebSocket."""
 import asyncio
+import json
 import time
 from dataclasses import dataclass
 from typing import Optional
-import aiohttp
 
-from config import SOFASCORE_HEADERS
+import websockets
+
+POLYMARKET_SPORTS_WSS = "wss://ws-live-data.polymarket.com"
+
+TENNIS_LEAGUES = {"atp", "wta", "challenger", "itf", "tennis"}
 
 
 @dataclass
@@ -23,115 +27,163 @@ class MatchState:
     timestamp: float
 
 
-FLASHSCORE_URL = "https://local.flashscore.com/x/feed/f_1_0_3_en_1"
-
-FLASHSCORE_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/plain, */*; q=0.01",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.flashscore.com/",
-    "X-fsign": "SW9D1eZo",
-    "Origin": "https://www.flashscore.com",
-}
-
-# Tennis sport ID in Flashscore is 2
-TENNIS_SPORT_ID = "2"
+def _parse_format(league: str, tournament: str) -> str:
+    grand_slams = ["australian open", "roland garros", "french open", "wimbledon", "us open"]
+    is_grand_slam = any(gs in tournament.lower() for gs in grand_slams)
+    is_men = league.lower() in {"atp", "challenger"}
+    return "bo5" if (is_grand_slam and is_men) else "bo3"
 
 
-def _parse_flashscore_line(line: str) -> Optional[dict]:
-    """Parse a single Flashscore data line into a dict."""
+def _parse_score(score_str: str, period: str) -> tuple[int, int, int, int, int]:
+    """
+    Parse score string like "6-2, 3-1" into sets and games.
+    Returns: sets_p1, sets_p2, games_p1, games_p2, current_set
+    """
+    if not score_str:
+        return 0, 0, 0, 0, 1
+
     try:
-        parts = line.split("¬")
-        data = {}
-        for part in parts:
-            if "÷" in part:
-                key, _, val = part.partition("÷")
-                data[key] = val
-        return data if data else None
-    except Exception:
+        # Split by comma to get individual sets
+        set_scores = [s.strip() for s in score_str.split(",")]
+
+        sets_p1 = 0
+        sets_p2 = 0
+        games_p1 = 0
+        games_p2 = 0
+        current_set = 1
+
+        for i, set_score in enumerate(set_scores):
+            if "-" not in set_score:
+                continue
+            parts = set_score.split("-")
+            s1 = int(parts[0].strip())
+            s2 = int(parts[1].strip().split("(")[0])  # remove tiebreak e.g. "7(5)"
+
+            # Check if this set is complete
+            is_complete = (
+                (max(s1, s2) >= 6 and abs(s1 - s2) >= 2) or
+                (max(s1, s2) == 7)
+            )
+
+            if is_complete:
+                if s1 > s2:
+                    sets_p1 += 1
+                else:
+                    sets_p2 += 1
+                current_set = i + 2  # next set
+            else:
+                # Current in-progress set
+                games_p1 = s1
+                games_p2 = s2
+                current_set = i + 1
+                break
+
+        return sets_p1, sets_p2, games_p1, games_p2, current_set
+
+    except (ValueError, IndexError):
+        return 0, 0, 0, 0, 1
+
+
+def _parse_message(msg: dict) -> Optional[MatchState]:
+    """Parse a Polymarket sports WebSocket message into MatchState."""
+    try:
+        league = msg.get("leagueAbbreviation", "").lower()
+        if league not in TENNIS_LEAGUES:
+            return None
+
+        status = msg.get("status", "").lower()
+        if status != "inprogress":
+            return None
+
+        if msg.get("ended", False):
+            return None
+
+        game_id = str(msg.get("gameId", ""))
+        player1 = msg.get("homeTeam", "")
+        player2 = msg.get("awayTeam", "")
+        score_str = msg.get("score", "")
+        period = msg.get("period", "S1")
+
+        if not player1 or not player2:
+            return None
+
+        sets_p1, sets_p2, games_p1, games_p2, current_set = _parse_score(score_str, period)
+
+        # Extract set number from period like "S2" -> 2
+        try:
+            if period.startswith("S"):
+                current_set = int(period[1:])
+        except (ValueError, IndexError):
+            pass
+
+        tournament = league.upper()
+
+        return MatchState(
+            match_id=game_id,
+            player1=player1,
+            player2=player2,
+            sets_p1=sets_p1,
+            sets_p2=sets_p2,
+            games_p1=games_p1,
+            games_p2=games_p2,
+            current_set=current_set,
+            format=_parse_format(league, tournament),
+            tournament=tournament,
+            timestamp=time.time(),
+        )
+
+    except Exception as e:
+        print(f"[sports ws parse error] {e}")
         return None
 
 
-def _parse_format(tournament: str) -> str:
-    grand_slams = ["australian open", "roland garros", "french open", "wimbledon", "us open"]
-    t_lower = tournament.lower()
-    return "bo5" if any(gs in t_lower for gs in grand_slams) else "bo3"
+# Shared state — updated by the WebSocket listener
+_live_matches: dict[str, MatchState] = {}
 
 
-async def fetch_live_matches(session: aiohttp.ClientSession) -> dict[str, MatchState]:
-    """Fetch live tennis matches from Flashscore."""
-    try:
-        async with session.get(
-            FLASHSCORE_URL,
-            headers=FLASHSCORE_HEADERS,
-            timeout=aiohttp.ClientTimeout(total=10),
-        ) as resp:
-            if resp.status == 403:
-                print("[flashscore] 403 forbidden")
-                await asyncio.sleep(5)
-                return {}
-            if resp.status != 200:
-                print(f"[flashscore] status {resp.status}")
-                return {}
+async def fetch_live_matches(session=None) -> dict[str, MatchState]:
+    """Return current snapshot of live tennis matches."""
+    return dict(_live_matches)
 
-            text = await resp.text(encoding="utf-8", errors="replace")
 
-        matches = {}
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                continue
+async def run_sports_feed():
+    """
+    Connect to Polymarket sports WebSocket and keep _live_matches updated.
+    Run this as a background task.
+    """
+    global _live_matches
 
-            data = _parse_flashscore_line(line)
-            if not data:
-                continue
+    while True:
+        try:
+            print(f"[sports ws] connecting to {POLYMARKET_SPORTS_WSS}")
+            async with websockets.connect(
+                POLYMARKET_SPORTS_WSS,
+                ping_interval=None,  # server sends pings
+            ) as ws:
+                print("[sports ws] connected")
+                async for raw in ws:
+                    # Handle ping
+                    if raw == "ping":
+                        await ws.send("pong")
+                        continue
 
-            # Sport ID check — tennis is "2"
-            if data.get("AA") != TENNIS_SPORT_ID:
-                continue
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
 
-            # Status: 1 = in progress
-            if data.get("AB") not in ("1", "2", "3", "4", "5"):
-                continue
+                    match = _parse_message(msg)
+                    if match:
+                        _live_matches[match.match_id] = match
+                    else:
+                        # Remove ended matches
+                        game_id = str(msg.get("gameId", ""))
+                        if game_id and msg.get("ended", False):
+                            _live_matches.pop(game_id, None)
 
-            try:
-                match_id = data.get("AA", "") + data.get("AD", "")
-                player1 = data.get("AE", "Unknown")
-                player2 = data.get("AF", "Unknown")
-                tournament = data.get("AL", "")
-
-                # Scores: sets
-                sets_p1 = int(data.get("AG", 0) or 0)
-                sets_p2 = int(data.get("AH", 0) or 0)
-
-                # Current set games
-                games_p1 = int(data.get("AI", 0) or 0)
-                games_p2 = int(data.get("AJ", 0) or 0)
-
-                # Current set number
-                current_set = sets_p1 + sets_p2 + 1
-
-                matches[match_id] = MatchState(
-                    match_id=match_id,
-                    player1=player1,
-                    player2=player2,
-                    sets_p1=sets_p1,
-                    sets_p2=sets_p2,
-                    games_p1=games_p1,
-                    games_p2=games_p2,
-                    current_set=current_set,
-                    format=_parse_format(tournament),
-                    tournament=tournament,
-                    timestamp=time.time(),
-                )
-            except (ValueError, KeyError):
-                continue
-
-        return matches
-
-    except asyncio.TimeoutError:
-        print("[flashscore] timeout")
-        return {}
-    except Exception as e:
-        print(f"[flashscore error] {e}")
-        return {}
+        except websockets.ConnectionClosed as e:
+            print(f"[sports ws] closed: {e}, reconnecting in 5s")
+            await asyncio.sleep(5)
+        except Exception as e:
+            print(f"[sports ws error] {e}, reconnecting in 10s")
+            await asyncio.sleep(10)
