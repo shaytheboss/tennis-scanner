@@ -70,9 +70,6 @@ async def fetch_active_tennis_markets() -> list[Market]:
                 items = data if isinstance(data, list) else data.get("data", [])
                 print(f"[polymarket] {len(items)} events found")
 
-                if items:
-                    print(f"[polymarket] sample: {json.dumps(items[0])[:400]}")
-
                 for event in items:
                     try:
                         event_markets = event.get("markets", [])
@@ -120,6 +117,11 @@ async def fetch_active_tennis_markets() -> list[Market]:
             print(f"[polymarket] error: {e}")
 
     print(f"[polymarket] total {len(markets)} tennis markets")
+
+    # DEBUG - הדפס 10 שוקים לדוגמה
+    for m in markets[:10]:
+        print(f"[polymarket sample] p1='{m.player1_name}' | p2='{m.player2_name}' | game_id={m.game_id}")
+
     return markets
 
 
