@@ -1,192 +1,182 @@
-"""Polymarket feed - sports events discovery + WebSocket price updates."""
+"""Live tennis feed via Polymarket sports WebSocket."""
 import asyncio
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
-import aiohttp
 import websockets
 
-from config import POLYMARKET_GAMMA_URL, POLYMARKET_CLOB_WSS, WS_PING_INTERVAL
+POLYMARKET_SPORTS_WSS = "wss://ws-live-data.polymarket.com"
+
+TENNIS_LEAGUES = {"atp", "wta", "challenger", "itf", "tennis"}
 
 
 @dataclass
-class Market:
-    condition_id: str
-    token_id_p1: str
-    token_id_p2: str
-    player1_name: str
-    player2_name: str
-    game_id: str = ""
-    price_p1: float = 0.5
-    price_p2: float = 0.5
-    last_updated: float = field(default_factory=time.time)
+class MatchState:
+    match_id: str
+    player1: str
+    player2: str
+    sets_p1: int
+    sets_p2: int
+    games_p1: int
+    games_p2: int
+    current_set: int
+    format: str
+    tournament: str
+    timestamp: float
 
 
-def _parse_players(home: str, away: str, question: str) -> Optional[tuple[str, str]]:
-    if home and away:
-        return (home, away)
-    q = question.strip()
-    for sep in [" vs. ", " vs ", " v. ", " v "]:
-        if sep in q:
-            parts = q.split(sep, 1)
-            if len(parts) == 2:
-                p1 = parts[0].strip(" ?.!")
-                p2 = parts[1].strip(" ?.!")
-                for prefix in ["Will ", "will "]:
-                    if p1.startswith(prefix):
-                        p1 = p1[len(prefix):]
-                return (p1, p2)
-    return None
+def _parse_format(league: str, tournament: str) -> str:
+    grand_slams = ["australian open", "roland garros", "french open", "wimbledon", "us open"]
+    is_grand_slam = any(gs in tournament.lower() for gs in grand_slams)
+    is_men = league.lower() in {"atp", "challenger"}
+    return "bo5" if (is_grand_slam and is_men) else "bo3"
 
 
-async def fetch_active_tennis_markets() -> list[Market]:
-    """Query Polymarket events API for active tennis markets."""
-    markets = []
+def _parse_score(score_str: str, period: str) -> tuple[int, int, int, int, int]:
+    """
+    Parse score like "6-2, 3-1" into sets and games.
+    Returns: sets_p1, sets_p2, games_p1, games_p2, current_set
+    """
+    if not score_str:
+        return 0, 0, 0, 0, 1
 
-    url = f"{POLYMARKET_GAMMA_URL}/events"
-    params = {
-        "tag_id": 864,
-        "active": "true",
-        "closed": "false",
-        "limit": 100,
-    }
+    try:
+        set_scores = [s.strip() for s in score_str.split(",")]
+        sets_p1 = 0
+        sets_p2 = 0
+        games_p1 = 0
+        games_p2 = 0
+        current_set = 1
 
-    async with aiohttp.ClientSession() as session:
+        for i, set_score in enumerate(set_scores):
+            if "-" not in set_score:
+                continue
+            parts = set_score.split("-")
+            s1 = int(parts[0].strip())
+            s2 = int(parts[1].strip().split("(")[0])
+
+            is_complete = (
+                (max(s1, s2) >= 6 and abs(s1 - s2) >= 2) or
+                (max(s1, s2) == 7)
+            )
+
+            if is_complete:
+                if s1 > s2:
+                    sets_p1 += 1
+                else:
+                    sets_p2 += 1
+                current_set = i + 2
+            else:
+                games_p1 = s1
+                games_p2 = s2
+                current_set = i + 1
+                break
+
+        return sets_p1, sets_p2, games_p1, games_p2, current_set
+
+    except (ValueError, IndexError):
+        return 0, 0, 0, 0, 1
+
+
+def _parse_message(msg: dict) -> Optional[MatchState]:
+    try:
+        league = msg.get("leagueAbbreviation", "").lower()
+        if league not in TENNIS_LEAGUES:
+            return None
+
+        status = msg.get("status", "").lower()
+        if status != "inprogress":
+            return None
+
+        if msg.get("ended", False):
+            return None
+
+        game_id = str(msg.get("gameId", ""))
+        player1 = msg.get("homeTeam", "")
+        player2 = msg.get("awayTeam", "")
+        score_str = msg.get("score", "")
+        period = msg.get("period", "S1")
+
+        if not player1 or not player2:
+            return None
+
+        sets_p1, sets_p2, games_p1, games_p2, current_set = _parse_score(score_str, period)
+
         try:
-            async with session.get(
-                url,
-                params=params,
-                timeout=aiohttp.ClientTimeout(total=15),
-                headers={"Accept": "application/json"},
-            ) as resp:
-                print(f"[polymarket] {url} → {resp.status}")
-                if resp.status != 200:
-                    print(f"[polymarket] error: {await resp.text()[:200]}")
-                    return []
+            if period.startswith("S"):
+                current_set = int(period[1:])
+        except (ValueError, IndexError):
+            pass
 
-                data = await resp.json()
-                items = data if isinstance(data, list) else data.get("data", [])
-                print(f"[polymarket] {len(items)} events found")
+        tournament = league.upper()
 
-                if items:
-                    print(f"[polymarket] sample: {json.dumps(items[0])[:400]}")
+        return MatchState(
+            match_id=game_id,
+            player1=player1,
+            player2=player2,
+            sets_p1=sets_p1,
+            sets_p2=sets_p2,
+            games_p1=games_p1,
+            games_p2=games_p2,
+            current_set=current_set,
+            format=_parse_format(league, tournament),
+            tournament=tournament,
+            timestamp=time.time(),
+        )
 
-                for event in items:
-                    try:
-                        event_markets = event.get("markets", [])
-                        for item in event_markets:
-                            home = item.get("homeTeam", "")
-                            away = item.get("awayTeam", "")
-                            question = item.get("question", "")
-                            game_id = str(item.get("gameId", event.get("id", "")))
+    except Exception as e:
+        print(f"[sports ws parse error] {e}")
+        return None
 
-                            players = _parse_players(home, away, question)
-                            if not players:
-                                continue
 
-                            raw_tokens = item.get("clobTokenIds", "[]")
-                            if isinstance(raw_tokens, str):
-                                token_ids = json.loads(raw_tokens)
-                            else:
-                                token_ids = raw_tokens or []
+_live_matches: dict[str, MatchState] = {}
 
-                            if len(token_ids) < 2:
-                                continue
 
-                            raw_prices = item.get("outcomePrices", "[0.5,0.5]")
-                            if isinstance(raw_prices, str):
-                                prices = json.loads(raw_prices)
-                            else:
-                                prices = raw_prices or [0.5, 0.5]
+async def fetch_live_matches(session=None) -> dict[str, MatchState]:
+    return dict(_live_matches)
 
-                            markets.append(Market(
-                                condition_id=item.get("conditionId", ""),
-                                token_id_p1=str(token_ids[0]),
-                                token_id_p2=str(token_ids[1]),
-                                player1_name=players[0],
-                                player2_name=players[1],
-                                game_id=game_id,
-                                price_p1=float(prices[0]) if prices else 0.5,
-                                price_p2=float(prices[1]) if len(prices) > 1 else 0.5,
-                            ))
 
-                    except Exception as e:
-                        print(f"[polymarket parse] {e}")
+async def run_sports_feed():
+    """Connect to Polymarket sports WebSocket and keep _live_matches updated."""
+    global _live_matches
+
+    while True:
+        try:
+            print(f"[sports ws] connecting to {POLYMARKET_SPORTS_WSS}")
+            async with websockets.connect(
+                POLYMARKET_SPORTS_WSS,
+                ping_interval=None,
+            ) as ws:
+                print("[sports ws] connected")
+                async for raw in ws:
+                    if raw == "ping":
+                        await ws.send("pong")
                         continue
 
-        except Exception as e:
-            print(f"[polymarket] error: {e}")
-
-    print(f"[polymarket] total {len(markets)} tennis markets")
-    return markets
-
-
-async def subscribe_prices(markets: list[Market]):
-    """WebSocket price subscription."""
-    while True:
-        if not markets:
-            print("[polymarket ws] no markets, sleeping 60s")
-            await asyncio.sleep(60)
-            continue
-
-        try:
-            token_to_market = {}
-            token_to_side = {}
-            for m in markets:
-                token_to_market[m.token_id_p1] = m
-                token_to_market[m.token_id_p2] = m
-                token_to_side[m.token_id_p1] = "p1"
-                token_to_side[m.token_id_p2] = "p2"
-
-            asset_ids = list(token_to_market.keys())
-            print(f"[polymarket ws] connecting, {len(asset_ids)} tokens")
-
-            async with websockets.connect(
-                POLYMARKET_CLOB_WSS,
-                ping_interval=WS_PING_INTERVAL,
-                ping_timeout=30,
-            ) as ws:
-                await ws.send(json.dumps({
-                    "type": "market",
-                    "assets_ids": asset_ids,
-                }))
-
-                async for raw_msg in ws:
                     try:
-                        msg = json.loads(raw_msg)
+                        msg = json.loads(raw)
                     except json.JSONDecodeError:
                         continue
 
-                    events = msg if isinstance(msg, list) else [msg]
-                    for ev in events:
-                        asset_id = ev.get("asset_id")
-                        if not asset_id or asset_id not in token_to_market:
-                            continue
-                        price = None
-                        if "price" in ev:
-                            try:
-                                price = float(ev["price"])
-                            except (ValueError, TypeError):
-                                pass
-                        elif "best_bid" in ev and "best_ask" in ev:
-                            try:
-                                price = (float(ev["best_bid"]) + float(ev["best_ask"])) / 2
-                            except (ValueError, TypeError):
-                                pass
-                        if price is None:
-                            continue
-                        market = token_to_market[asset_id]
-                        if token_to_side[asset_id] == "p1":
-                            market.price_p1 = price
-                        else:
-                            market.price_p2 = price
-                        market.last_updated = time.time()
+                    # DEBUG — הדפס כל הודעה
+                    league = msg.get("leagueAbbreviation", "")
+                    status = msg.get("status", "")
+                    print(f"[sports ws raw] league={league} status={status} home={msg.get('homeTeam', '')} score={msg.get('score', '')}")
+
+                    match = _parse_message(msg)
+                    if match:
+                        _live_matches[match.match_id] = match
+                        print(f"[sports ws] ✅ {match.player1} vs {match.player2} | sets {match.sets_p1}-{match.sets_p2} | games {match.games_p1}-{match.games_p2}")
+                    else:
+                        game_id = str(msg.get("gameId", ""))
+                        if game_id and msg.get("ended", False):
+                            _live_matches.pop(game_id, None)
 
         except websockets.ConnectionClosed as e:
-            print(f"[polymarket ws] closed: {e}, reconnecting in 5s")
+            print(f"[sports ws] closed: {e}, reconnecting in 5s")
             await asyncio.sleep(5)
         except Exception as e:
-            print(f"[polymarket ws error] {e}, reconnecting in 10s")
+            print(f"[sports ws error] {e}, reconnecting in 10s")
             await asyncio.sleep(10)
