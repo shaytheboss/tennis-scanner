@@ -47,7 +47,6 @@ def _parse_players(home: str, away: str, question: str) -> Optional[tuple[str, s
 
 
 async def _fetch_events(params: dict) -> list[Market]:
-    """Shared helper: fetch events from gamma API and parse into Market objects."""
     markets = []
     url = f"{POLYMARKET_GAMMA_URL}/events"
 
@@ -129,11 +128,6 @@ async def fetch_active_tennis_markets() -> list[Market]:
 
 
 async def fetch_active_football_markets() -> list[Market]:
-    """Query Polymarket events API for active football/soccer markets.
-
-    Uses POLYMARKET_FOOTBALL_TAG_ID from config (env var POLYMARKET_FOOTBALL_TAG_ID).
-    If set to 0 (default), discovers the soccer tag automatically via event search.
-    """
     tag_id = POLYMARKET_FOOTBALL_TAG_ID
 
     if tag_id == 0:
@@ -153,25 +147,30 @@ async def fetch_active_football_markets() -> list[Market]:
     return markets
 
 
-async def _discover_soccer_tag_id() -> int:
-    """Discover soccer tag_id by fetching sports events and reading their tags array.
+FOOTBALL_TITLE_KEYWORDS = [
+    "premier league", "la liga", "bundesliga", "serie a", "ligue 1",
+    "champions league", "europa league", "eredivisie", "mls",
+    "fa cup", "copa del rey", "dfb pokal",
+    "arsenal", "chelsea", "manchester", "barcelona", "real madrid",
+    "liverpool", "tottenham", "juventus", "milan", "inter",
+    "psg", "dortmund", "bayern",
+]
 
-    The /tags endpoint is blocked on non-allowlisted servers, so we search for
-    known football event titles through the /events endpoint and extract the tag
-    from the event's tags list.
-    """
+
+async def _discover_soccer_tag_id() -> int:
     url = f"{POLYMARKET_GAMMA_URL}/events"
-    search_terms = ["Champions League", "Premier League", "UEFA", "La Liga", "soccer"]
+
     async with aiohttp.ClientSession() as session:
-        for term in search_terms:
+        # Strategy 1: try q= search
+        for term in ["Champions League", "Premier League", "soccer"]:
             try:
                 params = {"q": term, "active": "true", "closed": "false", "limit": 10}
                 async with session.get(
-                    url,
-                    params=params,
+                    url, params=params,
                     timeout=aiohttp.ClientTimeout(total=10),
                     headers={"Accept": "application/json"},
                 ) as resp:
+                    print(f"[polymarket discover] q={term!r} → {resp.status}")
                     if resp.status != 200:
                         continue
                     data = await resp.json()
@@ -185,12 +184,40 @@ async def _discover_soccer_tag_id() -> int:
                                 print(f"[polymarket] discovered football tag_id={tag_id} (slug={slug})")
                                 return tag_id
             except Exception as e:
-                print(f"[polymarket discover] term={term}: {e}")
+                print(f"[polymarket discover] q={term!r} error: {e}")
+
+        # Strategy 2: fetch all events and detect soccer by title keywords
+        print("[polymarket discover] trying bulk fetch to find soccer tag...")
+        try:
+            params = {"active": "true", "closed": "false", "limit": 200}
+            async with session.get(
+                url, params=params,
+                timeout=aiohttp.ClientTimeout(total=15),
+                headers={"Accept": "application/json"},
+            ) as resp:
+                print(f"[polymarket discover] bulk → {resp.status}, checking titles...")
+                if resp.status == 200:
+                    data = await resp.json()
+                    items = data if isinstance(data, list) else data.get("data", [])
+                    for event in items:
+                        title = event.get("title", "").lower()
+                        if any(kw in title for kw in FOOTBALL_TITLE_KEYWORDS):
+                            for tag in event.get("tags", []):
+                                tag_id = int(tag.get("id", 0))
+                                slug = tag.get("slug", "").lower()
+                                if tag_id > 0:
+                                    print(
+                                        f"[polymarket] discovered football tag_id={tag_id}"
+                                        f" (slug={slug}) from: {event.get('title','')[:50]}"
+                                    )
+                                    return tag_id
+        except Exception as e:
+            print(f"[polymarket discover] bulk error: {e}")
+
     return 0
 
 
 async def subscribe_prices(markets: list[Market]):
-    """WebSocket price subscription for any list of Market objects."""
     while True:
         if not markets:
             print("[polymarket ws] no markets, sleeping 60s")
