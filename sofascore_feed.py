@@ -145,4 +145,37 @@ async def run_sports_feed():
 
                             data = await resp.json()
                             events = data.get("events", [])
-                            total_eve
+                            total_events += len(events)
+                            league = "atp" if "atp" in url else "wta"
+
+                            live_in_league = 0
+                            for event in events:
+                                match = _parse_espn_event(event)
+                                if match:
+                                    new_matches[match.match_id] = match
+                                    live_in_league += 1
+                                else:
+                                    status = event.get("status", {}).get("type", {}).get("name", "?")
+                                    name = event.get("name", "?")
+                                    print(f"[espn] {league} non-live: {name} ({status})")
+
+                            print(f"[espn] {league}: {len(events)} events, {live_in_league} live")
+
+                    except Exception as e:
+                        print(f"[espn error] {url}: {e}")
+                        continue
+
+                _live_matches = new_matches
+
+                if len(new_matches) != _last_live_count:
+                    _last_live_count = len(new_matches)
+                    if new_matches:
+                        for m in new_matches.values():
+                            print(f"[espn] 🎾 LIVE: {m.player1} vs {m.player2} | sets {m.sets_p1}-{m.sets_p2} | games {m.games_p1}-{m.games_p2} | {m.tournament}")
+                    else:
+                        print(f"[espn] no live matches (total events: {total_events})")
+
+            except Exception as e:
+                print(f"[espn feed error] {e}")
+
+            await asyncio.sleep(5)
