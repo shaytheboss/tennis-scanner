@@ -132,8 +132,7 @@ async def fetch_active_football_markets() -> list[Market]:
     """Query Polymarket events API for active football/soccer markets.
 
     Uses POLYMARKET_FOOTBALL_TAG_ID from config (env var POLYMARKET_FOOTBALL_TAG_ID).
-    If set to 0 (default), discovers the soccer tag automatically via the /tags endpoint.
-    To find the correct tag ID manually: GET https://gamma-api.polymarket.com/tags
+    If set to 0 (default), discovers the soccer tag automatically via event search.
     """
     tag_id = POLYMARKET_FOOTBALL_TAG_ID
 
@@ -155,23 +154,38 @@ async def fetch_active_football_markets() -> list[Market]:
 
 
 async def _discover_soccer_tag_id() -> int:
-    """Fetch /tags from gamma API and return the ID for soccer/football."""
-    url = f"{POLYMARKET_GAMMA_URL}/tags"
+    """Discover soccer tag_id by fetching sports events and reading their tags array.
+
+    The /tags endpoint is blocked on non-allowlisted servers, so we search for
+    known football event titles through the /events endpoint and extract the tag
+    from the event's tags list.
+    """
+    url = f"{POLYMARKET_GAMMA_URL}/events"
+    search_terms = ["Champions League", "Premier League", "UEFA", "La Liga", "soccer"]
     async with aiohttp.ClientSession() as session:
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status != 200:
-                    return 0
-                tags = await resp.json()
-                for tag in tags:
-                    slug = tag.get("slug", "").lower()
-                    label = tag.get("label", "").lower()
-                    if slug in ("soccer", "football") or label in ("soccer", "football"):
-                        tag_id = int(tag.get("id", 0))
-                        print(f"[polymarket] discovered football tag_id={tag_id} (slug={slug})")
-                        return tag_id
-        except Exception as e:
-            print(f"[polymarket tags] {e}")
+        for term in search_terms:
+            try:
+                params = {"q": term, "active": "true", "closed": "false", "limit": 10}
+                async with session.get(
+                    url,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                    headers={"Accept": "application/json"},
+                ) as resp:
+                    if resp.status != 200:
+                        continue
+                    data = await resp.json()
+                    items = data if isinstance(data, list) else data.get("data", [])
+                    for event in items:
+                        for tag in event.get("tags", []):
+                            slug = tag.get("slug", "").lower()
+                            label = tag.get("label", "").lower()
+                            if slug in ("soccer", "football") or "soccer" in label or "football" in label:
+                                tag_id = int(tag.get("id", 0))
+                                print(f"[polymarket] discovered football tag_id={tag_id} (slug={slug})")
+                                return tag_id
+            except Exception as e:
+                print(f"[polymarket discover] term={term}: {e}")
     return 0
 
 
