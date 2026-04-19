@@ -1,9 +1,13 @@
 """Telegram notification handler."""
+from typing import Optional
+
 import aiohttp
+
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from detector import Alert
 from sofascore_feed import MatchState
 from polymarket_feed import Market
+from football_detector import FootballAlert
 
 TELEGRAM_API = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 
@@ -32,23 +36,30 @@ async def _send(message: str) -> bool:
         return False
 
 
-async def send_match_started(match: MatchState, market: Market) -> bool:
-    p1_pct = round(market.price_p1 * 100)
-    p2_pct = round(market.price_p2 * 100)
-    market_url = f"https://polymarket.com/event/{market.condition_id}"
-
-    message = (
-        f"🎾 <b>Match started — now tracking</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"⚔️ <b>{match.player1}</b> vs <b>{match.player2}</b>\n"
-        f"🏆 {match.tournament} ({match.format.upper()})\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f"📊 Polymarket odds:\n"
-        f"  • {match.player1}: <b>{p1_pct}¢</b>\n"
-        f"  • {match.player2}: <b>{p2_pct}¢</b>\n"
-        f"━━━━━━━━━━━━━━━━━━\n"
-        f'<a href="{market_url}">Open in Polymarket →</a>'
-    )
+async def send_match_started(match: MatchState, market: Optional[Market]) -> bool:
+    if market:
+        p1_pct = round(market.price_p1 * 100)
+        p2_pct = round(market.price_p2 * 100)
+        market_url = f"https://polymarket.com/event/{market.condition_id}"
+        message = (
+            f"🎾 <b>Match started — now tracking</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"⚔️ <b>{match.player1}</b> vs <b>{match.player2}</b>\n"
+            f"🏆 {match.tournament} ({match.format.upper()})\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Polymarket odds:\n"
+            f"  • {match.player1}: <b>{p1_pct}¢</b>\n"
+            f"  • {match.player2}: <b>{p2_pct}¢</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f'<a href="{market_url}">Open in Polymarket →</a>'
+        )
+    else:
+        message = (
+            f"🎾 <b>Match started (no Polymarket market found)</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"⚔️ <b>{match.player1}</b> vs <b>{match.player2}</b>\n"
+            f"🏆 {match.tournament} ({match.format.upper()})"
+        )
     return await _send(message)
 
 
@@ -70,10 +81,27 @@ async def send_alert(alert: Alert) -> bool:
     return await _send(message)
 
 
-async def send_startup_message(num_markets: int) -> bool:
+async def send_football_alert(alert: FootballAlert) -> bool:
+    market_url = f"https://polymarket.com/event/{alert.condition_id}"
     message = (
-        f"🟢 <b>Tennis Scanner online</b>\n"
-        f"Tracking {num_markets} live Polymarket tennis markets.\n"
+        f"⚽ <b>Football Alert — {alert.league}</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"🏟 <b>{alert.team1}</b> {alert.score1}–{alert.score2} <b>{alert.team2}</b>\n"
+        f"⏱ Minute: <b>{alert.minute}'</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f"📈 Leading team: <b>{alert.leader_team}</b>\n"
+        f"💰 Polymarket win price: <b>{alert.leader_price*100:.0f}¢</b>\n"
+        f"━━━━━━━━━━━━━━━━━━\n"
+        f'<a href="{market_url}">Open in Polymarket →</a>'
+    )
+    return await _send(message)
+
+
+async def send_startup_message(num_tennis: int, num_football: int) -> bool:
+    message = (
+        f"🟢 <b>Scanner online</b>\n"
+        f"🎾 {num_tennis} Polymarket tennis markets\n"
+        f"⚽ {num_football} Polymarket football markets\n"
         f"Monitoring ESPN for opportunities..."
     )
     return await _send(message)
