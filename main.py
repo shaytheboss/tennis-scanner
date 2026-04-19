@@ -27,9 +27,6 @@ from config import (
 
 
 async def scanner_loop(markets: list[Market], alerted: dict[str, float], tracked: set):
-    # Tracks matches that already received a "match started" Telegram alert.
-    # Separate from `tracked` so that if a match appears before its Polymarket
-    # market is loaded, the start alert is still sent once the market is found.
     start_alerted: set = set()
     unmatched_logged: set = set()
 
@@ -48,7 +45,6 @@ async def scanner_loop(markets: list[Market], alerted: dict[str, float], tracked
                         unmatched_logged.add(match_id)
                     continue
 
-                # Send start alert the first time a market is found for this match
                 if match_id not in start_alerted:
                     start_alerted.add(match_id)
                     print(
@@ -74,7 +70,6 @@ async def scanner_loop(markets: list[Market], alerted: dict[str, float], tracked
                         f" | edge={alert.edge*100:.1f}%"
                     )
 
-            # Clean up ended matches
             ended = tracked - set(live_matches.keys())
             for match_id in ended:
                 tracked.discard(match_id)
@@ -188,7 +183,12 @@ async def main():
     alerted: dict[str, float] = {}
     tracked: set = set()
 
-    await send_startup_message(len(tennis_markets), len(football_markets))
+    print(f"[main] sending startup message to Telegram...")
+    try:
+        ok = await send_startup_message(len(tennis_markets), len(football_markets))
+        print(f"[main] startup message {'sent ✅' if ok else 'FAILED ❌'}")
+    except Exception as e:
+        print(f"[main] startup message error: {e}")
 
     try:
         await asyncio.gather(
