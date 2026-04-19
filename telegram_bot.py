@@ -27,9 +27,10 @@ async def _send(message: str) -> bool:
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status == 200:
+                    print(f"[telegram] ✅ sent ({len(message)} chars)")
                     return True
                 body = await resp.text()
-                print(f"[telegram error] status={resp.status}, body={body[:200]}")
+                print(f"[telegram error] status={resp.status}, body={body[:300]}")
                 return False
     except Exception as e:
         print(f"[telegram error] {e}")
