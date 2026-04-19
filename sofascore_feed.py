@@ -1,6 +1,5 @@
 """Live tennis feed via ESPN API - polling every 5s."""
 import asyncio
-import json
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -131,6 +130,7 @@ async def run_sports_feed():
         while True:
             try:
                 new_matches = {}
+                total_events = 0
 
                 for url in ESPN_URLS:
                     try:
@@ -145,28 +145,4 @@ async def run_sports_feed():
 
                             data = await resp.json()
                             events = data.get("events", [])
-
-                            for event in events:
-                                match = _parse_espn_event(event)
-                                if match:
-                                    new_matches[match.match_id] = match
-
-                    except Exception as e:
-                        print(f"[espn error] {url}: {e}")
-                        continue
-
-                _live_matches = new_matches
-
-                # הדפס רק כשמספר המשחקים משתנה
-                if len(new_matches) != _last_live_count:
-                    _last_live_count = len(new_matches)
-                    if new_matches:
-                        names = ", ".join(f"{m.player1} vs {m.player2}" for m in new_matches.values())
-                        print(f"[espn] {len(new_matches)} live: {names}")
-                    else:
-                        print("[espn] no live matches")
-
-            except Exception as e:
-                print(f"[espn feed error] {e}")
-
-            await asyncio.sleep(5)
+                            total_eve
