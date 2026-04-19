@@ -8,7 +8,12 @@ from typing import Optional
 import aiohttp
 import websockets
 
-from config import POLYMARKET_GAMMA_URL, POLYMARKET_CLOB_WSS, WS_PING_INTERVAL
+from config import (
+    POLYMARKET_GAMMA_URL,
+    POLYMARKET_CLOB_WSS,
+    POLYMARKET_FOOTBALL_TAG_ID,
+    WS_PING_INTERVAL,
+)
 
 
 @dataclass
@@ -41,17 +46,10 @@ def _parse_players(home: str, away: str, question: str) -> Optional[tuple[str, s
     return None
 
 
-async def fetch_active_tennis_markets() -> list[Market]:
-    """Query Polymarket events API for active tennis markets."""
+async def _fetch_events(params: dict) -> list[Market]:
+    """Shared helper: fetch events from gamma API and parse into Market objects."""
     markets = []
-
     url = f"{POLYMARKET_GAMMA_URL}/events"
-    params = {
-        "tag_id": 864,
-        "active": "true",
-        "closed": "false",
-        "limit": 100,
-    }
 
     async with aiohttp.ClientSession() as session:
         try:
@@ -61,7 +59,7 @@ async def fetch_active_tennis_markets() -> list[Market]:
                 timeout=aiohttp.ClientTimeout(total=15),
                 headers={"Accept": "application/json"},
             ) as resp:
-                print(f"[polymarket] {url} → {resp.status}")
+                print(f"[polymarket] {url} params={params} → {resp.status}")
                 if resp.status != 200:
                     print(f"[polymarket] error: {await resp.text()[:200]}")
                     return []
@@ -116,15 +114,69 @@ async def fetch_active_tennis_markets() -> list[Market]:
         except Exception as e:
             print(f"[polymarket] error: {e}")
 
-    print(f"[polymarket] total {len(markets)} tennis markets")
-
-  
-
     return markets
 
 
+async def fetch_active_tennis_markets() -> list[Market]:
+    markets = await _fetch_events({
+        "tag_id": 864,
+        "active": "true",
+        "closed": "false",
+        "limit": 100,
+    })
+    print(f"[polymarket] total {len(markets)} tennis markets")
+    return markets
+
+
+async def fetch_active_football_markets() -> list[Market]:
+    """Query Polymarket events API for active football/soccer markets.
+
+    Uses POLYMARKET_FOOTBALL_TAG_ID from config (env var POLYMARKET_FOOTBALL_TAG_ID).
+    If set to 0 (default), discovers the soccer tag automatically via the /tags endpoint.
+    To find the correct tag ID manually: GET https://gamma-api.polymarket.com/tags
+    """
+    tag_id = POLYMARKET_FOOTBALL_TAG_ID
+
+    if tag_id == 0:
+        tag_id = await _discover_soccer_tag_id()
+
+    if tag_id == 0:
+        print("[polymarket] could not determine football tag_id, skipping football markets")
+        return []
+
+    markets = await _fetch_events({
+        "tag_id": tag_id,
+        "active": "true",
+        "closed": "false",
+        "limit": 100,
+    })
+    print(f"[polymarket] total {len(markets)} football markets")
+    return markets
+
+
+async def _discover_soccer_tag_id() -> int:
+    """Fetch /tags from gamma API and return the ID for soccer/football."""
+    url = f"{POLYMARKET_GAMMA_URL}/tags"
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status != 200:
+                    return 0
+                tags = await resp.json()
+                for tag in tags:
+                    slug = tag.get("slug", "").lower()
+                    label = tag.get("label", "").lower()
+                    if slug in ("soccer", "football") or label in ("soccer", "football"):
+                        tag_id = int(tag.get("id", 0))
+                        print(f"[polymarket] discovered football tag_id={tag_id} (slug={slug})")
+                        return tag_id
+        except Exception as e:
+            print(f"[polymarket tags] {e}")
+    return 0
+
+
 async def subscribe_prices(markets: list[Market]):
-    """WebSocket price subscription."""
+    """WebSocket price subscription for any list of Market objects."""
     while True:
         if not markets:
             print("[polymarket ws] no markets, sleeping 60s")
