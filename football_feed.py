@@ -13,8 +13,8 @@ import aiohttp
 from config import SOFASCORE_HEADERS, FOOTBALL_POLL_INTERVAL_SECONDS
 
 SOFASCORE_FOOTBALL_URL = "https://api.sofascore.com/api/v1/sport/football/events/live"
+SOFASCORE_RETRY_SECONDS = 300  # retry Sofascore every 5 minutes after a block
 
-# ESPN slugs for 30+ leagues — covers Europe, Americas, Asia, Middle East
 ESPN_FOOTBALL_LEAGUES = [
     # Top European
     ("eng.1",   "Premier League"),
@@ -83,12 +83,8 @@ class FootballMatch:
     timestamp: float
 
 
-# ── Minute calculation ──────────────────────────────────────────────────────
-
 def _minute_from_sofascore(status: dict, time_data: dict) -> int:
-    """Estimate match minute from Sofascore status + time data."""
     desc = status.get("description", "")
-    # Handle "72'", "45+2'", "90+3'"
     if "'" in desc:
         try:
             main = desc.split("'")[0].strip()
@@ -99,7 +95,6 @@ def _minute_from_sofascore(status: dict, time_data: dict) -> int:
         except (ValueError, IndexError):
             pass
 
-    # Fall back to period + timestamp calculation
     period = status.get("period", 1)
     start_ts = time_data.get("currentPeriodStartTimestamp", 0)
     if start_ts:
@@ -112,20 +107,16 @@ def _minute_from_sofascore(status: dict, time_data: dict) -> int:
             return 90 + min(elapsed, 15)
         elif period == 4:
             return 105 + min(elapsed, 15)
-
     return 0
 
 
 def _minute_from_espn(status: dict) -> int:
-    """Extract minute from ESPN status displayClock like '87:00' or '90:00+2'."""
     clock = status.get("displayClock", "0:00")
     try:
         return int(clock.split(":")[0])
     except (ValueError, AttributeError):
         return 0
 
-
-# ── Parsers ─────────────────────────────────────────────────────────────────
 
 def _parse_sofascore_football(event: dict) -> Optional[FootballMatch]:
     try:
@@ -135,7 +126,6 @@ def _parse_sofascore_football(event: dict) -> Optional[FootballMatch]:
             status_name = status_type.get("name", status_type.get("code", ""))
         else:
             status_name = str(status_type)
-        # Accept both live play and half-time (treat HT as minute 45)
         if status_name not in ("inprogress", "halftime"):
             return None
 
@@ -209,16 +199,12 @@ def _parse_espn_football(event: dict, league_name: str) -> Optional[FootballMatc
         return None
 
 
-# ── Shared state ────────────────────────────────────────────────────────────
-
 _live_football: dict[str, FootballMatch] = {}
 
 
 async def fetch_live_football() -> dict[str, FootballMatch]:
     return dict(_live_football)
 
-
-# ── Fetch functions ─────────────────────────────────────────────────────────
 
 async def _fetch_sofascore(session: aiohttp.ClientSession) -> Optional[dict[str, FootballMatch]]:
     try:
@@ -266,23 +252,23 @@ async def _fetch_espn(session: aiohttp.ClientSession) -> dict[str, FootballMatch
     return matches
 
 
-# ── Feed loop ───────────────────────────────────────────────────────────────
-
 async def run_football_feed():
     global _live_football
     print("[football] starting feed (Sofascore → ESPN fallback)")
 
-    sofascore_blocked = False
+    sofascore_blocked_until = 0.0
 
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                if not sofascore_blocked:
+                now = _time.time()
+                if now >= sofascore_blocked_until:
                     result = await _fetch_sofascore(session)
                     if result is None:
-                        sofascore_blocked = True
+                        sofascore_blocked_until = now + SOFASCORE_RETRY_SECONDS
                         new_matches = await _fetch_espn(session)
                     else:
+                        sofascore_blocked_until = 0.0
                         new_matches = result
                 else:
                     new_matches = await _fetch_espn(session)
