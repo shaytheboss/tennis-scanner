@@ -27,13 +27,6 @@ class FootballAlert:
 def check_football_opportunity(
     match: FootballMatch, market: Market
 ) -> Optional[FootballAlert]:
-    """Return a FootballAlert when all conditions are met, else None.
-
-    Conditions (all must be true):
-      1. One team leads by >= FOOTBALL_MIN_GOAL_LEAD goals
-      2. Current minute >= FOOTBALL_MIN_MINUTE
-      3. Polymarket win price for the leading team <= FOOTBALL_MAX_LEADER_PRICE
-    """
     if match.score1 > match.score2:
         lead = match.score1 - match.score2
         leader_team = match.team1
@@ -47,14 +40,17 @@ def check_football_opportunity(
         leader_price = market.price_p2
         token_id = market.token_id_p2
     else:
-        return None
+        return None  # draw
 
     if lead < FOOTBALL_MIN_GOAL_LEAD:
         return None
+
     if match.minute < FOOTBALL_MIN_MINUTE:
         return None
+
     if leader_price < 0.5:
         return None
+
     if leader_price > FOOTBALL_MAX_LEADER_PRICE:
         return None
 
