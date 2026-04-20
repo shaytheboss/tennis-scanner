@@ -110,10 +110,12 @@ async def market_refresh_loop(markets: list[Market]):
 
 async def football_scanner_loop(markets: list[Market], alerted: dict[str, float]):
     unmatched_logged: set = set()
+    await asyncio.sleep(15)  # wait for feed to populate before first scan
 
     while True:
         try:
             live_matches = await fetch_live_football()
+            print(f"[football scanner] {len(live_matches)} live, {len(markets)} poly markets")
 
             for match_id, match in live_matches.items():
                 market = match_teams(match, markets)
@@ -179,6 +181,8 @@ async def main():
 
     football_markets = await fetch_active_football_markets()
     print(f"✅ Found {len(football_markets)} active Polymarket football markets")
+    for m in football_markets[:20]:
+        print(f"  [football market] {m.player1_name} vs {m.player2_name} | slug={m.event_slug}")
 
     alerted: dict[str, float] = {}
     tracked: set = set()
