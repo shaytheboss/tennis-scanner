@@ -12,7 +12,6 @@ import aiohttp
 
 from config import SOFASCORE_LIVE_URL, SOFASCORE_HEADERS
 
-# ESPN fallback endpoints
 ESPN_TENNIS_URLS = [
     ("http://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard", "ATP"),
     ("http://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard", "WTA"),
@@ -21,6 +20,8 @@ ESPN_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Accept": "application/json",
 }
+
+SOFASCORE_RETRY_SECONDS = 300  # retry Sofascore every 5 minutes after a block
 
 
 @dataclass
@@ -42,8 +43,6 @@ def _parse_format(tournament: str) -> str:
     grand_slams = ["australian open", "roland garros", "french open", "wimbledon", "us open"]
     return "bo5" if any(gs in tournament.lower() for gs in grand_slams) else "bo3"
 
-
-# ── Sofascore parser ────────────────────────────────────────────────────────
 
 def _parse_sofascore_event(event: dict) -> Optional[MatchState]:
     try:
@@ -104,8 +103,6 @@ def _parse_sofascore_event(event: dict) -> Optional[MatchState]:
         return None
 
 
-# ── ESPN parser (fallback) ──────────────────────────────────────────────────
-
 def _parse_espn_event(event: dict) -> Optional[MatchState]:
     try:
         if event.get("status", {}).get("type", {}).get("name") != "STATUS_IN_PROGRESS":
@@ -162,8 +159,6 @@ def _parse_espn_event(event: dict) -> Optional[MatchState]:
         return None
 
 
-# ── Shared state ────────────────────────────────────────────────────────────
-
 _live_matches: dict[str, MatchState] = {}
 _last_live_count = -1
 
@@ -171,8 +166,6 @@ _last_live_count = -1
 async def fetch_live_matches(session=None) -> dict[str, MatchState]:
     return dict(_live_matches)
 
-
-# ── Feed loop ───────────────────────────────────────────────────────────────
 
 async def _fetch_sofascore(session: aiohttp.ClientSession) -> Optional[dict[str, MatchState]]:
     try:
@@ -227,17 +220,19 @@ async def run_sports_feed():
     global _live_matches, _last_live_count
     print("[tennis] starting feed (Sofascore → ESPN fallback)")
 
-    sofascore_blocked = False
+    sofascore_blocked_until = 0.0
 
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                if not sofascore_blocked:
+                now = _time.time()
+                if now >= sofascore_blocked_until:
                     result = await _fetch_sofascore(session)
                     if result is None:
-                        sofascore_blocked = True
+                        sofascore_blocked_until = now + SOFASCORE_RETRY_SECONDS
                         new_matches = await _fetch_espn(session)
                     else:
+                        sofascore_blocked_until = 0.0
                         new_matches = result
                 else:
                     new_matches = await _fetch_espn(session)
