@@ -24,6 +24,7 @@ class Market:
     player1_name: str
     player2_name: str
     game_id: str = ""
+    event_slug: str = ""
     price_p1: float = 0.5
     price_p2: float = 0.5
     last_updated: float = field(default_factory=time.time)
@@ -47,6 +48,7 @@ def _parse_players(home: str, away: str, question: str) -> Optional[tuple[str, s
 
 
 async def _fetch_events(params: dict) -> list[Market]:
+    """Shared helper: fetch events from gamma API and parse into Market objects."""
     markets = []
     url = f"{POLYMARKET_GAMMA_URL}/events"
 
@@ -69,6 +71,7 @@ async def _fetch_events(params: dict) -> list[Market]:
 
                 for event in items:
                     try:
+                        event_slug = event.get("slug", "")
                         event_markets = event.get("markets", [])
                         for item in event_markets:
                             home = item.get("homeTeam", "")
@@ -102,6 +105,7 @@ async def _fetch_events(params: dict) -> list[Market]:
                                 player1_name=players[0],
                                 player2_name=players[1],
                                 game_id=game_id,
+                                event_slug=event_slug,
                                 price_p1=float(prices[0]) if prices else 0.5,
                                 price_p2=float(prices[1]) if len(prices) > 1 else 0.5,
                             ))
@@ -117,6 +121,7 @@ async def _fetch_events(params: dict) -> list[Market]:
 
 
 async def fetch_active_tennis_markets() -> list[Market]:
+    """Query Polymarket events API for active tennis markets."""
     markets = await _fetch_events({
         "tag_id": 864,
         "active": "true",
@@ -128,6 +133,12 @@ async def fetch_active_tennis_markets() -> list[Market]:
 
 
 async def fetch_active_football_markets() -> list[Market]:
+    """Query Polymarket events API for active football/soccer markets.
+
+    Uses POLYMARKET_FOOTBALL_TAG_ID from config (env var POLYMARKET_FOOTBALL_TAG_ID).
+    If set to 0 (default), discovers the soccer tag automatically via the /tags endpoint.
+    To find the correct tag ID manually: GET https://gamma-api.polymarket.com/tags
+    """
     tag_id = POLYMARKET_FOOTBALL_TAG_ID
 
     if tag_id == 0:
@@ -158,6 +169,11 @@ FOOTBALL_TITLE_KEYWORDS = [
 
 
 async def _discover_soccer_tag_id() -> int:
+    """Discover soccer tag_id by examining event tags in bulk fetches.
+
+    Strategy 1: search by q= parameter (may not be supported).
+    Strategy 2: fetch all active events and find soccer tags by title keyword.
+    """
     url = f"{POLYMARKET_GAMMA_URL}/events"
 
     async with aiohttp.ClientSession() as session:
@@ -218,6 +234,7 @@ async def _discover_soccer_tag_id() -> int:
 
 
 async def subscribe_prices(markets: list[Market]):
+    """WebSocket price subscription for any list of Market objects."""
     while True:
         if not markets:
             print("[polymarket ws] no markets, sleeping 60s")
