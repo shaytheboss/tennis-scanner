@@ -22,6 +22,7 @@ class FootballAlert:
     leader_price: float
     condition_id: str
     token_id: str
+    event_slug: str = ""
 
 
 def check_football_opportunity(
@@ -40,7 +41,7 @@ def check_football_opportunity(
         leader_price = market.price_p2
         token_id = market.token_id_p2
     else:
-        return None  # draw
+        return None
 
     if lead < FOOTBALL_MIN_GOAL_LEAD:
         return None
@@ -67,4 +68,5 @@ def check_football_opportunity(
         leader_price=leader_price,
         condition_id=market.condition_id,
         token_id=token_id,
+        event_slug=market.event_slug,
     )
