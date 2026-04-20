@@ -1,16 +1,21 @@
-"""Live tennis feed via ESPN API - polling every 5s."""
+"""Live tennis feed.
+
+Primary source: Sofascore API (global coverage).
+Fallback: ESPN ATP + WTA scoreboard if Sofascore is blocked.
+"""
 import asyncio
-import time
+import time as _time
 from dataclasses import dataclass
 from typing import Optional
 
 import aiohttp
 
-ESPN_URLS = [
-    "http://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard",
-    "http://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard",
-]
+from config import SOFASCORE_LIVE_URL, SOFASCORE_HEADERS
 
+ESPN_TENNIS_URLS = [
+    ("http://site.api.espn.com/apis/site/v2/sports/tennis/atp/scoreboard", "ATP"),
+    ("http://site.api.espn.com/apis/site/v2/sports/tennis/wta/scoreboard", "WTA"),
+]
 ESPN_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     "Accept": "application/json",
@@ -37,79 +42,87 @@ def _parse_format(tournament: str) -> str:
     return "bo5" if any(gs in tournament.lower() for gs in grand_slams) else "bo3"
 
 
+def _parse_sofascore_event(event: dict) -> Optional[MatchState]:
+    try:
+        if event.get("status", {}).get("type", {}).get("name") != "inprogress":
+            return None
+        player1 = event.get("homeTeam", {}).get("name", "")
+        player2 = event.get("awayTeam", {}).get("name", "")
+        if not player1 or not player2:
+            return None
+        match_id = str(event.get("id", ""))
+        tournament = event.get("tournament", {}).get("name", "")
+        home_score = event.get("homeScore", {})
+        away_score = event.get("awayScore", {})
+        sets_p1 = sets_p2 = games_p1 = games_p2 = 0
+        current_set = 1
+        for i in range(1, 6):
+            h = home_score.get(f"period{i}")
+            a = away_score.get(f"period{i}")
+            if h is None or a is None:
+                break
+            h, a = int(h), int(a)
+            complete = (max(h, a) >= 6 and abs(h - a) >= 2) or max(h, a) == 7
+            if complete:
+                if h > a:
+                    sets_p1 += 1
+                else:
+                    sets_p2 += 1
+                current_set = i + 1
+            else:
+                games_p1, games_p2, current_set = h, a, i
+                break
+        return MatchState(
+            match_id=match_id, player1=player1, player2=player2,
+            sets_p1=sets_p1, sets_p2=sets_p2, games_p1=games_p1, games_p2=games_p2,
+            current_set=current_set, format=_parse_format(tournament),
+            tournament=tournament, timestamp=_time.time(),
+        )
+    except Exception as e:
+        print(f"[sofascore parse error] {e}")
+        return None
+
+
 def _parse_espn_event(event: dict) -> Optional[MatchState]:
     try:
-        status_type = event.get("status", {}).get("type", {})
-        if status_type.get("name") not in ("STATUS_IN_PROGRESS",):
+        if event.get("status", {}).get("type", {}).get("name") != "STATUS_IN_PROGRESS":
             return None
-
-        competitions = event.get("competitions", [])
-        if not competitions:
-            return None
-
-        comp = competitions[0]
+        comp = (event.get("competitions") or [{}])[0]
         competitors = comp.get("competitors", [])
         if len(competitors) < 2:
             return None
-
-        home = competitors[0]
-        away = competitors[1]
-
+        home, away = competitors[0], competitors[1]
         player1 = home.get("athlete", {}).get("displayName", "")
         player2 = away.get("athlete", {}).get("displayName", "")
-
         if not player1 or not player2:
             return None
-
-        match_id = str(event.get("id", ""))
+        match_id = f"espn_{event.get('id', '')}"
         tournament = event.get("name", "")
-
         home_lines = home.get("linescores", [])
         away_lines = away.get("linescores", [])
-
-        sets_p1 = 0
-        sets_p2 = 0
-        games_p1 = 0
-        games_p2 = 0
+        sets_p1 = sets_p2 = games_p1 = games_p2 = 0
         current_set = 1
-
-        for i, (h, a) in enumerate(zip(home_lines, away_lines)):
-            s1 = int(h.get("value", 0) or 0)
-            s2 = int(a.get("value", 0) or 0)
-
-            is_complete = (
-                (max(s1, s2) >= 6 and abs(s1 - s2) >= 2) or
-                max(s1, s2) == 7
-            )
-
-            if is_complete:
-                if s1 > s2:
+        for i, (h_obj, a_obj) in enumerate(zip(home_lines, away_lines)):
+            h = int(h_obj.get("value", 0) or 0)
+            a = int(a_obj.get("value", 0) or 0)
+            complete = (max(h, a) >= 6 and abs(h - a) >= 2) or max(h, a) == 7
+            if complete:
+                if h > a:
                     sets_p1 += 1
                 else:
                     sets_p2 += 1
                 current_set = i + 2
             else:
-                games_p1 = s1
-                games_p2 = s2
-                current_set = i + 1
+                games_p1, games_p2, current_set = h, a, i + 1
                 break
-
         return MatchState(
-            match_id=match_id,
-            player1=player1,
-            player2=player2,
-            sets_p1=sets_p1,
-            sets_p2=sets_p2,
-            games_p1=games_p1,
-            games_p2=games_p2,
-            current_set=current_set,
-            format=_parse_format(tournament),
-            tournament=tournament,
-            timestamp=time.time(),
+            match_id=match_id, player1=player1, player2=player2,
+            sets_p1=sets_p1, sets_p2=sets_p2, games_p1=games_p1, games_p2=games_p2,
+            current_set=current_set, format=_parse_format(tournament),
+            tournament=tournament, timestamp=_time.time(),
         )
-
     except Exception as e:
-        print(f"[espn parse error] {e}")
+        print(f"[espn tennis parse error] {e}")
         return None
 
 
@@ -121,49 +134,70 @@ async def fetch_live_matches(session=None) -> dict[str, MatchState]:
     return dict(_live_matches)
 
 
+async def _fetch_sofascore(session: aiohttp.ClientSession) -> Optional[dict[str, MatchState]]:
+    try:
+        async with session.get(
+            SOFASCORE_LIVE_URL, headers=SOFASCORE_HEADERS,
+            timeout=aiohttp.ClientTimeout(total=8),
+        ) as resp:
+            if resp.status != 200:
+                print(f"[tennis] Sofascore blocked ({resp.status}), switching to ESPN")
+                return None
+            data = await resp.json()
+            matches = {}
+            for event in data.get("events", []):
+                m = _parse_sofascore_event(event)
+                if m:
+                    matches[m.match_id] = m
+            print(f"[tennis] Sofascore ✅ {len(matches)} live matches")
+            return matches
+    except Exception as e:
+        print(f"[tennis] Sofascore error: {e}, switching to ESPN")
+        return None
+
+
+async def _fetch_espn(session: aiohttp.ClientSession) -> dict[str, MatchState]:
+    matches = {}
+    for url, tour in ESPN_TENNIS_URLS:
+        try:
+            async with session.get(
+                url, headers=ESPN_HEADERS,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                if resp.status != 200:
+                    print(f"[tennis] ESPN {tour} → {resp.status}")
+                    continue
+                data = await resp.json()
+                events = data.get("events", [])
+                live = 0
+                for event in events:
+                    m = _parse_espn_event(event)
+                    if m:
+                        matches[m.match_id] = m
+                        live += 1
+                print(f"[tennis] ESPN {tour}: {len(events)} events, {live} live")
+        except Exception as e:
+            print(f"[tennis] ESPN {tour} error: {e}")
+    return matches
+
+
 async def run_sports_feed():
     global _live_matches, _last_live_count
-
-    print("[espn] starting feed")
+    print("[tennis] starting feed (Sofascore → ESPN fallback)")
+    sofascore_blocked = False
 
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                new_matches = {}
-                total_events = 0
-
-                for url in ESPN_URLS:
-                    try:
-                        async with session.get(
-                            url,
-                            headers=ESPN_HEADERS,
-                            timeout=aiohttp.ClientTimeout(total=10),
-                        ) as resp:
-                            if resp.status != 200:
-                                print(f"[espn] {url} → {resp.status}")
-                                continue
-
-                            data = await resp.json()
-                            events = data.get("events", [])
-                            total_events += len(events)
-                            league = "atp" if "atp" in url else "wta"
-
-                            live_in_league = 0
-                            for event in events:
-                                match = _parse_espn_event(event)
-                                if match:
-                                    new_matches[match.match_id] = match
-                                    live_in_league += 1
-                                else:
-                                    status = event.get("status", {}).get("type", {}).get("name", "?")
-                                    name = event.get("name", "?")
-                                    print(f"[espn] {league} non-live: {name} ({status})")
-
-                            print(f"[espn] {league}: {len(events)} events, {live_in_league} live")
-
-                    except Exception as e:
-                        print(f"[espn error] {url}: {e}")
-                        continue
+                if not sofascore_blocked:
+                    result = await _fetch_sofascore(session)
+                    if result is None:
+                        sofascore_blocked = True
+                        new_matches = await _fetch_espn(session)
+                    else:
+                        new_matches = result
+                else:
+                    new_matches = await _fetch_espn(session)
 
                 _live_matches = new_matches
 
@@ -171,11 +205,15 @@ async def run_sports_feed():
                     _last_live_count = len(new_matches)
                     if new_matches:
                         for m in new_matches.values():
-                            print(f"[espn] 🎾 LIVE: {m.player1} vs {m.player2} | sets {m.sets_p1}-{m.sets_p2} | games {m.games_p1}-{m.games_p2} | {m.tournament}")
+                            print(
+                                f"[tennis] 🎾 LIVE: {m.player1} vs {m.player2}"
+                                f" | sets {m.sets_p1}-{m.sets_p2}"
+                                f" | games {m.games_p1}-{m.games_p2} | {m.tournament}"
+                            )
                     else:
-                        print(f"[espn] no live matches (total events: {total_events})")
+                        print("[tennis] no live matches")
 
             except Exception as e:
-                print(f"[espn feed error] {e}")
+                print(f"[tennis feed error] {e}")
 
             await asyncio.sleep(5)
