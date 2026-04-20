@@ -41,7 +41,7 @@ async def send_match_started(match: MatchState, market: Optional[Market]) -> boo
     if market:
         p1_pct = round(market.price_p1 * 100)
         p2_pct = round(market.price_p2 * 100)
-        market_url = f"https://polymarket.com/event/{market.condition_id}"
+        market_url = f"https://polymarket.com/event/{market.event_slug}" if market.event_slug else f"https://polymarket.com/event/{market.condition_id}"
         message = (
             f"🎾 <b>Match started — now tracking</b>\n"
             f"━━━━━━━━━━━━━━━━━━\n"
@@ -65,7 +65,7 @@ async def send_match_started(match: MatchState, market: Optional[Market]) -> boo
 
 
 async def send_alert(alert: Alert) -> bool:
-    market_url = f"https://polymarket.com/event/{alert.condition_id}"
+    market_url = f"https://polymarket.com/event/{alert.event_slug}" if alert.event_slug else f"https://polymarket.com/event/{alert.condition_id}"
     message = (
         f"🎾 <b>Tennis Opportunity</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
@@ -83,7 +83,7 @@ async def send_alert(alert: Alert) -> bool:
 
 
 async def send_football_alert(alert: FootballAlert) -> bool:
-    market_url = f"https://polymarket.com/event/{alert.condition_id}"
+    market_url = f"https://polymarket.com/event/{alert.event_slug}" if alert.event_slug else f"https://polymarket.com/event/{alert.condition_id}"
     message = (
         f"⚽ <b>Football Alert — {alert.league}</b>\n"
         f"━━━━━━━━━━━━━━━━━━\n"
