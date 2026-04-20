@@ -47,9 +47,6 @@ SOFASCORE_HEADERS = {
 POLYMARKET_GAMMA_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
 
-# Football tag ID on Polymarket gamma API.
-# To find the correct value: GET https://gamma-api.polymarket.com/tags and look for slug="soccer"
-# Override with env var POLYMARKET_FOOTBALL_TAG_ID if the default doesn't return results.
 POLYMARKET_FOOTBALL_TAG_ID = int(os.getenv("POLYMARKET_FOOTBALL_TAG_ID", "0"))
 
 # ─── Tennis runtime ──────────────────────────────────────────
@@ -64,10 +61,6 @@ FOOTBALL_POLL_INTERVAL_SECONDS = int(os.getenv("FOOTBALL_POLL_INTERVAL_SECONDS",
 FOOTBALL_MARKET_REFRESH_SECONDS = int(os.getenv("FOOTBALL_MARKET_REFRESH_SECONDS", "600"))
 FOOTBALL_ALERT_COOLDOWN_SECONDS = int(os.getenv("FOOTBALL_ALERT_COOLDOWN_SECONDS", "3600"))
 
-# Conditions for a football alert:
-#   - leading team's goal advantage >= FOOTBALL_MIN_GOAL_LEAD
-#   - current minute >= FOOTBALL_MIN_MINUTE
-#   - Polymarket win price for leading team <= FOOTBALL_MAX_LEADER_PRICE
 FOOTBALL_MIN_GOAL_LEAD = int(os.getenv("FOOTBALL_MIN_GOAL_LEAD", "2"))
 FOOTBALL_MIN_MINUTE = int(os.getenv("FOOTBALL_MIN_MINUTE", "90"))
 FOOTBALL_MAX_LEADER_PRICE = float(os.getenv("FOOTBALL_MAX_LEADER_PRICE", "0.99"))
