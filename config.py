@@ -15,18 +15,18 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     )
 
 # ─── Tennis alert thresholds ─────────────────────────────────
+# Situations fire only when the leader is ONE SET away from winning the match
+# AND leads 5-0 or 5-1 in that deciding set.
 THRESHOLDS = {
-    "lead_5_0":         0.03,
-    "lead_5_1":         0.06,
-    "lead_2_0_sets":    0.06,
-    "lead_2_0_and_3_0": 0.02,
+    "lead_5_0_deciding": 0.03,
+    "lead_5_1_deciding": 0.06,
+    "match_won_bo3":     0.02,
 }
 
 STAT_PROBS = {
-    "lead_5_0":         0.98,
-    "lead_5_1":         0.95,
-    "lead_2_0_sets":    0.95,
-    "lead_2_0_and_3_0": 0.99,
+    "lead_5_0_deciding": 0.97,
+    "lead_5_1_deciding": 0.93,
+    "match_won_bo3":     0.99,
 }
 
 # ─── Sofascore ───────────────────────────────────────────────
