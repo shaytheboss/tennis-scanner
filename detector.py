@@ -26,6 +26,7 @@ class Alert:
     condition_id: str
     token_id: str
     tournament: str
+    event_slug: str = ""
 
 
 def _build_situation_text(situation, g_lead, g_trail, s_lead, s_trail, current_set, fmt):
@@ -41,10 +42,6 @@ def _build_situation_text(situation, g_lead, g_trail, s_lead, s_trail, current_s
 
 
 def _leader_side_in_market(match: MatchState, market: Market, leader: str) -> str:
-    """
-    Determine if the ESPN leader corresponds to p1 or p2 in the Polymarket market.
-    leader is "p1" or "p2" from ESPN's perspective.
-    """
     from difflib import SequenceMatcher
 
     if leader == "p1":
@@ -161,4 +158,5 @@ def check_opportunity(match: MatchState, market: Market) -> Optional[Alert]:
         condition_id=market.condition_id,
         token_id=token_id,
         tournament=match.tournament,
+        event_slug=market.event_slug,
     )
