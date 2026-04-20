@@ -19,6 +19,7 @@ def _extract_team_name(raw: str) -> str:
 
 
 def match_teams(match: FootballMatch, markets: list[Market]) -> Market | None:
+    """Return the best Polymarket market for the given live football match, or None."""
     best_market = None
     best_score = 0.0
 
