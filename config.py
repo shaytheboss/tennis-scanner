@@ -15,8 +15,6 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
     )
 
 # ─── Tennis alert thresholds ─────────────────────────────────
-# Situations fire only when the leader is ONE SET away from winning the match
-# AND leads 5-0 or 5-1 in that deciding set.
 THRESHOLDS = {
     "lead_5_0_deciding": 0.03,
     "lead_5_1_deciding": 0.06,
@@ -46,6 +44,7 @@ SOFASCORE_HEADERS = {
 # ─── Polymarket ──────────────────────────────────────────────
 POLYMARKET_GAMMA_URL = "https://gamma-api.polymarket.com"
 POLYMARKET_CLOB_WSS = "wss://ws-subscriptions-clob.polymarket.com/ws/market"
+POLYMARKET_CLOB_REST = "https://clob.polymarket.com"
 
 POLYMARKET_FOOTBALL_TAG_ID = int(os.getenv("POLYMARKET_FOOTBALL_TAG_ID", "0"))
 
