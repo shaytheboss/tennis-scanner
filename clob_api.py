@@ -34,12 +34,14 @@ async def check_market_resolved(condition_id: str, token_id: str, buy_price: flo
     """
     try:
         async with aiohttp.ClientSession() as session:
+            # Use conditionId (singular) — correct Gamma API parameter
             async with session.get(
                 f"{GAMMA_BASE}/markets",
-                params={"conditionIds": condition_id},
+                params={"conditionId": condition_id},
                 timeout=aiohttp.ClientTimeout(total=10),
             ) as resp:
                 if resp.status != 200:
+                    print(f"[clob] resolve API status={resp.status} for {condition_id}")
                     return None
                 data = await resp.json()
                 items = data if isinstance(data, list) else data.get("data", [])
@@ -47,15 +49,17 @@ async def check_market_resolved(condition_id: str, token_id: str, buy_price: flo
                     return None
 
                 market = items[0]
-                if not market.get("closed", False):
+                closed = market.get("closed") or market.get("settled") or False
+                if not closed:
                     return None
 
                 raw_tokens = market.get("clobTokenIds", "[]")
-                token_ids = json.loads(raw_tokens) if isinstance(raw_tokens, str) else raw_tokens
+                token_ids = json.loads(raw_tokens) if isinstance(raw_tokens, str) else (raw_tokens or [])
                 raw_prices = market.get("outcomePrices", "[0.5,0.5]")
-                prices = json.loads(raw_prices) if isinstance(raw_prices, str) else raw_prices
+                prices = json.loads(raw_prices) if isinstance(raw_prices, str) else (raw_prices or [0.5, 0.5])
 
                 if token_id not in token_ids:
+                    print(f"[clob] token {token_id} not found in market tokens")
                     return None
 
                 idx = token_ids.index(token_id)
