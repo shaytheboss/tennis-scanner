@@ -31,11 +31,11 @@ class Alert:
 
 def _build_situation_text(situation, g_lead, g_trail, s_lead, s_trail, current_set, fmt):
     if situation == "lead_5_0_deciding":
-        return f"leads {s_lead}-{s_trail} in sets, {g_lead}-{g_trail} in set {current_set} (deciding)"
+        return f"leads {g_lead}-{g_trail} in set {current_set} (deciding set)"
     if situation == "lead_5_1_deciding":
-        return f"leads {s_lead}-{s_trail} in sets, {g_lead}-{g_trail} in set {current_set} (deciding)"
+        return f"leads {g_lead}-{g_trail} in set {current_set} (deciding set)"
     if situation == "match_won_bo3":
-        return f"won {s_lead}-{s_trail} sets"
+        return f"won match {s_lead}-{s_trail} in sets"
     return situation
 
 
@@ -84,13 +84,17 @@ def check_opportunity(match: MatchState, market: Market) -> Optional[Alert]:
             tournament=match.tournament,
         )
 
-    # Determine who leads in sets
     if match.sets_p1 > match.sets_p2:
         leader = "p1"
     elif match.sets_p2 > match.sets_p1:
         leader = "p2"
     else:
-        return None  # sets tied — no advantage
+        if match.games_p1 > match.games_p2:
+            leader = "p1"
+        elif match.games_p2 > match.games_p1:
+            leader = "p2"
+        else:
+            return None
 
     if leader == "p1":
         g_lead, g_trail = match.games_p1, match.games_p2
@@ -102,18 +106,18 @@ def check_opportunity(match: MatchState, market: Market) -> Optional[Alert]:
         leader_name = match.player2
 
     sets_to_win = 2 if match.format == "bo3" else 3
+
     situation = None
 
-    # Only alert when leader needs exactly ONE more set to win the match
-    # AND has a commanding game lead in that deciding set
+    # Fire only when one set away from winning and leading 5-0 or 5-1 in current set
     if s_lead == sets_to_win - 1:
         if g_lead == 5 and g_trail == 0:
             situation = "lead_5_0_deciding"
         elif g_lead == 5 and g_trail == 1:
             situation = "lead_5_1_deciding"
 
-    # Edge case: bo3 match briefly shows as live after 2nd set won
-    if situation is None and match.format == "bo3" and s_lead == 2 and s_trail == 0:
+    # Special case: match just finished in bo3 but market hasn't settled yet
+    if situation is None and match.format == "bo3" and s_lead == 2:
         situation = "match_won_bo3"
 
     if not situation:
