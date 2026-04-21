@@ -18,13 +18,19 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
 THRESHOLDS = {
     "lead_5_0_deciding": 0.03,
     "lead_5_1_deciding": 0.06,
-    "match_won_bo3":     0.02,
+    "lead_5_2_deciding": 0.13,
+    "lead_4_0_deciding": 0.07,
+    "lead_4_1_deciding": 0.10,
+    "match_won":         0.02,
 }
 
 STAT_PROBS = {
     "lead_5_0_deciding": 0.97,
     "lead_5_1_deciding": 0.93,
-    "match_won_bo3":     0.99,
+    "lead_5_2_deciding": 0.84,
+    "lead_4_0_deciding": 0.91,
+    "lead_4_1_deciding": 0.87,
+    "match_won":         0.99,
 }
 
 # ─── Sofascore ───────────────────────────────────────────────
