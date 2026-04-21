@@ -16,7 +16,7 @@ from telegram_bot import (
     send_match_started,
     send_football_alert,
 )
-from database import init_db, record_trade, resolve_trade, get_pending_trades
+from database import init_db, record_trade, get_pending_trades, resolve_trade
 from clob_api import get_best_ask, check_market_resolved
 from dashboard import run_dashboard
 from config import (
@@ -39,6 +39,7 @@ async def scanner_loop(markets: list[Market], alerted: dict[str, float], tracked
 
             for match_id, match in live_matches.items():
                 tracked.add(match_id)
+
                 market = match_players(match, markets)
 
                 if not market:
@@ -64,39 +65,38 @@ async def scanner_loop(markets: list[Market], alerted: dict[str, float], tracked
                 if now - alerted.get(alert_key, 0) < ALERT_COOLDOWN_SECONDS:
                     continue
 
-                # Verify real available price from order book
+                # Verify price via CLOB order book
                 verified_ask = await get_best_ask(alert.token_id)
+                if verified_ask is None:
+                    verified_ask = alert.price_leader
 
-                # Skip if order book confirms no edge
-                if verified_ask is not None and verified_ask >= alert.statistical_prob:
-                    print(
-                        f"[scanner] skipping — no edge at ask {verified_ask:.2f}"
-                        f" (prob={alert.statistical_prob:.2f})"
-                    )
+                edge_verified = alert.statistical_prob - verified_ask
+                if edge_verified <= 0:
+                    print(f"[scanner] edge gone at ask={verified_ask:.2%}, skipping")
                     continue
+
+                trade_id = record_trade(
+                    match_id=match_id,
+                    player1=alert.player1,
+                    player2=alert.player2,
+                    tournament=alert.tournament,
+                    situation=alert.situation_type,
+                    leader=alert.leader,
+                    condition_id=alert.condition_id,
+                    token_id=alert.token_id,
+                    event_slug=alert.event_slug,
+                    stat_prob=alert.statistical_prob,
+                    ws_price=alert.price_leader,
+                    verified_ask=verified_ask,
+                )
 
                 success = await send_alert(alert, verified_ask=verified_ask)
                 if success:
                     alerted[alert_key] = now
-                    trade_id = record_trade(
-                        match_id=match_id,
-                        player1=alert.player1,
-                        player2=alert.player2,
-                        tournament=alert.tournament,
-                        situation=alert.situation_type,
-                        leader=alert.leader,
-                        condition_id=alert.condition_id,
-                        token_id=alert.token_id,
-                        event_slug=alert.event_slug,
-                        stat_prob=alert.statistical_prob,
-                        ws_price=alert.price_leader,
-                        verified_ask=verified_ask,
-                    )
-                    effective = verified_ask or alert.price_leader
                     print(
-                        f"[trade #{trade_id}] recorded"
-                        f" | ask={effective:.2f}"
-                        f" | edge={(alert.statistical_prob - effective)*100:.1f}%"
+                        f"[{alert.timestamp}] ✅ {alert.leader} {alert.situation_text}"
+                        f" | ask={verified_ask:.2%} edge={edge_verified*100:.1f}%"
+                        f" | trade_id={trade_id}"
                     )
 
             ended = tracked - set(live_matches.keys())
@@ -120,34 +120,6 @@ async def scanner_loop(markets: list[Market], alerted: dict[str, float], tracked
         await asyncio.sleep(POLL_INTERVAL_SECONDS)
 
 
-async def resolution_loop():
-    """Check pending paper trades for market resolution every 10 minutes."""
-    await asyncio.sleep(120)
-    while True:
-        try:
-            pending = get_pending_trades()
-            if pending:
-                print(f"[resolution] checking {len(pending)} pending trades...")
-            for trade in pending:
-                buy_price = trade["verified_ask"] or trade["ws_price"]
-                result = await check_market_resolved(
-                    trade["condition_id"],
-                    trade["token_id"],
-                    buy_price,
-                )
-                if result:
-                    outcome, pnl = result
-                    resolve_trade(trade["id"], outcome, pnl)
-                    print(
-                        f"[resolution] trade #{trade['id']}"
-                        f" ({trade['leader']}) → {outcome} | pnl={pnl:+.4f}"
-                    )
-                await asyncio.sleep(1)
-        except Exception as e:
-            print(f"[resolution error] {e}")
-        await asyncio.sleep(600)
-
-
 async def market_refresh_loop(markets: list[Market]):
     while True:
         await asyncio.sleep(MARKET_REFRESH_SECONDS)
@@ -163,6 +135,27 @@ async def market_refresh_loop(markets: list[Market]):
                 print(f"[refresh tennis] {len(markets)} markets")
         except Exception as e:
             print(f"[refresh tennis error] {e}")
+
+
+async def resolution_loop():
+    while True:
+        await asyncio.sleep(600)  # check every 10 minutes
+        try:
+            pending = get_pending_trades()
+            if not pending:
+                continue
+            print(f"[resolution] checking {len(pending)} pending trades...")
+            for trade in pending:
+                buy_price = trade["verified_ask"] if trade["verified_ask"] is not None else trade["ws_price"]
+                result = await check_market_resolved(
+                    trade["condition_id"], trade["token_id"], buy_price
+                )
+                if result:
+                    outcome, pnl = result
+                    resolve_trade(trade["id"], outcome, pnl)
+                    print(f"[resolution] trade {trade['id']} ({trade['player1']} vs {trade['player2']}) → {outcome} | pnl={pnl:+.2%}")
+        except Exception as e:
+            print(f"[resolution error] {e}")
 
 
 async def football_scanner_loop(markets: list[Market], alerted: dict[str, float]):
@@ -231,8 +224,9 @@ async def football_market_refresh_loop(markets: list[Market]):
 
 
 async def main():
-    init_db()
     print("🎾⚽ Scanner starting...")
+
+    init_db()
 
     tennis_markets = await fetch_active_tennis_markets()
     print(f"✅ Found {len(tennis_markets)} active Polymarket tennis markets")
